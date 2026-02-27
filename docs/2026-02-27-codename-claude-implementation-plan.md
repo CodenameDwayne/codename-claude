@@ -395,14 +395,16 @@ Prove the full chain works without the heartbeat.
 
 ### Phase 2 Done When:
 
-- [ ] Daemon starts with `npx tsx src/daemon.ts` and runs the heartbeat loop
-- [ ] Heartbeat ticks every 60s with zero token cost
-- [ ] Cron trigger fires on schedule
-- [ ] Token budget tracker prevents overspending (queues work when low)
-- [ ] Work queue persists across daemon restarts
-- [ ] Scout runs automatically on schedule and writes to .brain/
-- [ ] Hooks log tool use and verify session summaries
-- [ ] Daemon shuts down cleanly on Ctrl+C
+- [x] Daemon starts with `npx tsx src/daemon.ts` and runs the heartbeat loop
+- [x] Heartbeat ticks every 60s with zero token cost
+- [x] Cron trigger fires on schedule
+- [x] Token budget tracker prevents overspending (queues work when low)
+- [x] Work queue persists across daemon restarts
+- [x] Scout runs automatically on schedule and writes to .brain/
+- [x] Hooks log tool use and verify session summaries
+- [x] Daemon shuts down cleanly on Ctrl+C
+
+> **✅ Phase 2 completed 2026-02-27.** Session notes: [2026-02-27-phase-2-session-notes.md](2026-02-27-phase-2-session-notes.md)
 
 ---
 
