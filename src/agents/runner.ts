@@ -1,7 +1,52 @@
 import { query, type HookEvent, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk';
+import { execFileSync } from 'node:child_process';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+
+// Resolve the native claude binary path once at module load time.
+// Important: `npx tsx` prepends node_modules/.bin to PATH, which may contain
+// a JS shim (`#!/usr/bin/env node` script) that fails when spawned from a
+// background process where `node` isn't resolvable. We prioritize the native
+// Mach-O binary over any JS shim by checking known install locations first.
+let _claudePath: string | undefined;
+function findClaudeExecutable(): string {
+  if (_claudePath) return _claudePath;
+
+  const home = process.env['HOME'] ?? '~';
+
+  // 1. Check known native binary locations first (these are standalone executables)
+  const nativeLocations = [
+    join(home, '.local', 'bin', 'claude'),
+    '/usr/local/bin/claude',
+    join(home, '.claude', 'bin', 'claude'),
+  ];
+
+  for (const loc of nativeLocations) {
+    try {
+      if (existsSync(loc) && statSync(loc).isFile()) {
+        // Resolve symlinks — the SDK's existsSync check may fail on symlinks
+        _claudePath = realpathSync(loc);
+        return _claudePath;
+      }
+    } catch {
+      // skip
+    }
+  }
+
+  // 2. Fall back to which (may find JS shim, but better than nothing)
+  try {
+    _claudePath = execFileSync('which', ['claude'], { encoding: 'utf-8' }).trim();
+    return _claudePath;
+  } catch {
+    // not found
+  }
+
+  // 3. Last resort
+  _claudePath = nativeLocations[0]!;
+  return _claudePath;
+}
 
 // Paths
 const CODENAME_HOME = join(process.env['HOME'] ?? '~', '.codename-claude');
@@ -188,16 +233,20 @@ export async function runAgent(
   log(`[runner] Spawning ${agent.frontmatter.name} (${model}, sandboxed: ${sandboxed})`);
   log(`[runner] Task: ${task}`);
 
-  // 4. Clear CLAUDECODE env var to allow spawning from within a Claude Code session
+  // 4. Prepare environment for SDK child process
   const env = { ...process.env };
   delete env['CLAUDECODE'];
 
   // 5. Run agent via SDK
+  const claudePath = findClaudeExecutable();
+  log(`[runner] Using claude at: ${claudePath}`);
+
   for await (const message of query({
     prompt: task,
     options: {
       systemPrompt,
       model,
+      pathToClaudeCodeExecutable: claudePath,
       allowedTools: agent.frontmatter.tools,
       cwd: projectPath,
       permissionMode: 'bypassPermissions',
