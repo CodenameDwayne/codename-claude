@@ -2,7 +2,8 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { withSandbox, type SandboxConfig } from './sandbox.js';
+// Vercel Sandbox wrapper available for future cloud VM isolation:
+// import { withSandbox, type SandboxConfig } from './sandbox.js';
 
 // Paths
 const CODENAME_HOME = join(process.env['HOME'] ?? '~', '.codename-claude');
@@ -246,38 +247,51 @@ async function runSandboxed(
   projectPath: string,
   task: string,
 ): Promise<RunResult> {
-  const sandboxConfig: SandboxConfig = {
-    vcpus: 4,
-    timeoutMs: 30 * 60 * 1000,
-  };
+  // Use Agent SDK's built-in sandbox for Bash command isolation.
+  // This uses macOS Seatbelt to restrict what commands can do on the host.
+  // For full cloud VM isolation, see sandbox.ts (Vercel Sandbox wrapper).
+  const env = { ...process.env };
+  delete env['CLAUDECODE'];
 
-  const { syncedFiles } = await withSandbox(
-    projectPath,
-    sandboxConfig,
-    async (_sandbox, workspacePath) => {
-      for await (const message of query({
-        prompt: task,
-        options: {
-          systemPrompt,
-          model,
-          allowedTools: agent.frontmatter.tools,
-          cwd: workspacePath,
-          permissionMode: 'bypassPermissions',
-          allowDangerouslySkipPermissions: true,
-        },
-      })) {
-        if ('result' in message && typeof message.result === 'string') {
-          console.log(`[${agent.frontmatter.name}]`, message.result);
+  for await (const message of query({
+    prompt: task,
+    options: {
+      systemPrompt,
+      model,
+      allowedTools: agent.frontmatter.tools,
+      cwd: projectPath,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      env,
+      sandbox: {
+        enabled: true,
+        autoAllowBashIfSandboxed: true,
+      },
+      stderr: (data: string) => process.stderr.write(`[stderr] ${data}`),
+    },
+  })) {
+    const msg = message as Record<string, unknown>;
+    if (msg['type'] === 'assistant' && msg['message']) {
+      const assistantMsg = msg['message'] as Record<string, unknown>;
+      const content = assistantMsg['content'];
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block && typeof block === 'object' && 'type' in block) {
+            if (block.type === 'text' && 'text' in block) {
+              console.log(`[${agent.frontmatter.name}]`, block.text);
+            } else if (block.type === 'tool_use' && 'name' in block) {
+              console.log(`[${agent.frontmatter.name}] 🔧 ${block.name}`);
+            }
+          }
         }
       }
-    },
-  );
-
-  console.log(`[runner] Synced ${syncedFiles.length} files back from sandbox`);
+    } else if ('result' in msg && typeof msg.result === 'string') {
+      console.log(`[${agent.frontmatter.name}] Result:`, msg.result);
+    }
+  }
 
   return {
     agentName: agent.frontmatter.name,
     sandboxed: true,
-    syncedFiles,
   };
 }
