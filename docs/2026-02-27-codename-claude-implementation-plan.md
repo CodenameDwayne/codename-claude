@@ -256,14 +256,16 @@ Prove the full chain works without the heartbeat.
 
 ### Phase 1 Done When:
 
-- [ ] `codename-claude` repo exists with TypeScript scaffold
-- [ ] `~/.codename-claude/` has identity, rules, skills, agents, and brain template
-- [ ] Sandbox wrapper can create/sync/stop Vercel Sandbox microVMs
-- [ ] Agent runner can spawn sessions with or without sandboxing based on agent definition
-- [ ] A manual Scout run (non-sandboxed) produces research in .brain/RESEARCH/ and a session summary
-- [ ] A manual Builder run (sandboxed) writes code inside a sandbox and syncs changes back to host
-- [ ] A second run demonstrates context preservation (reads first run's output)
-- [ ] None of this touches `~/.claude/` — your normal Claude Code is unaffected
+- [x] `codename-claude` repo exists with TypeScript scaffold
+- [x] `~/.codename-claude/` has identity, rules, skills, agents, and brain template
+- [x] Sandbox wrapper can create/sync/stop Vercel Sandbox microVMs *(revised: using Agent SDK built-in sandbox instead — see notes)*
+- [x] Agent runner can spawn sessions with or without sandboxing based on agent definition
+- [x] A manual Scout run (non-sandboxed) produces research in .brain/RESEARCH/ and a session summary
+- [x] A manual Builder run (sandboxed) writes code inside a sandbox and syncs changes back to host
+- [x] A second run demonstrates context preservation (reads first run's output)
+- [x] None of this touches `~/.claude/` — your normal Claude Code is unaffected
+
+> **✅ Phase 1 completed 2026-02-27.** Session notes: [2026-02-27-phase-1-session-notes.md](2026-02-27-phase-1-session-notes.md)
 
 ---
 
