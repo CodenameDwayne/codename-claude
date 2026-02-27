@@ -1,0 +1,283 @@
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { parse as parseYaml } from 'yaml';
+import { withSandbox, type SandboxConfig } from './sandbox.js';
+
+// Paths
+const CODENAME_HOME = join(process.env['HOME'] ?? '~', '.codename-claude');
+const AGENTS_DIR = join(CODENAME_HOME, 'agents');
+const IDENTITY_DIR = join(CODENAME_HOME, 'identity');
+const SKILLS_DIR = join(IDENTITY_DIR, 'skills');
+const RULES_DIR = join(IDENTITY_DIR, 'rules');
+
+// --- Types ---
+
+interface AgentFrontmatter {
+  name: string;
+  model: string;
+  sandboxed: boolean;
+  tools: string[];
+  skills: string[];
+}
+
+interface AgentDefinition {
+  frontmatter: AgentFrontmatter;
+  systemPromptSection: string; // The markdown body after frontmatter
+}
+
+export interface RunResult {
+  agentName: string;
+  sandboxed: boolean;
+  syncedFiles?: string[];
+}
+
+// --- File Readers ---
+
+async function readTextFile(path: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
+async function readAllFilesInDir(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const contents: string[] = [];
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.md')) {
+        const content = await readFile(join(dir, entry.name), 'utf-8');
+        contents.push(content);
+      }
+    }
+    return contents;
+  } catch {
+    return [];
+  }
+}
+
+// --- Parsing ---
+
+function parseAgentDefinition(raw: string): AgentDefinition {
+  const frontmatterMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!frontmatterMatch) {
+    throw new Error('Agent definition must have YAML frontmatter between --- delimiters');
+  }
+
+  const yamlBlock = frontmatterMatch[1] ?? '';
+  const frontmatter = parseYaml(yamlBlock) as AgentFrontmatter;
+  const systemPromptSection = frontmatterMatch[2]?.trim() ?? '';
+
+  if (!frontmatter.name || !frontmatter.model) {
+    throw new Error('Agent frontmatter must include name and model');
+  }
+
+  return {
+    frontmatter: {
+      name: frontmatter.name,
+      model: frontmatter.model,
+      sandboxed: frontmatter.sandboxed ?? false,
+      tools: frontmatter.tools ?? [],
+      skills: frontmatter.skills ?? [],
+    },
+    systemPromptSection,
+  };
+}
+
+// --- System Prompt Construction ---
+
+async function buildSystemPrompt(
+  agent: AgentDefinition,
+  projectPath: string,
+): Promise<string> {
+  const sections: string[] = [];
+
+  // 1. Identity
+  const identity = await readTextFile(join(IDENTITY_DIR, 'system-prompt.md'));
+  if (identity) sections.push(identity);
+
+  // 2. Rules
+  const rules = await readAllFilesInDir(RULES_DIR);
+  if (rules.length > 0) {
+    sections.push('---\n\n# Rules\n\n' + rules.join('\n\n---\n\n'));
+  }
+
+  // 3. Skills referenced by this agent
+  for (const skillName of agent.frontmatter.skills) {
+    const skill = await readTextFile(join(SKILLS_DIR, `${skillName}.md`));
+    if (skill) {
+      sections.push(`---\n\n# Skill: ${skillName}\n\n${skill}`);
+    }
+  }
+
+  // 4. Agent role-specific prompt
+  if (agent.systemPromptSection) {
+    sections.push(`---\n\n# Your Role\n\n${agent.systemPromptSection}`);
+  }
+
+  // 5. Project context from .brain/
+  const brainDir = join(projectPath, '.brain');
+  const brainFiles = [
+    'PROJECT.md',
+    'ACTIVE.md',
+    'DECISIONS.md',
+    'PATTERNS.md',
+    'MISTAKES.md',
+    'SESSIONS/latest.md',
+  ];
+
+  const brainSections: string[] = [];
+  for (const file of brainFiles) {
+    const content = await readTextFile(join(brainDir, file));
+    if (content && content.trim()) {
+      brainSections.push(`### ${file}\n\n${content}`);
+    }
+  }
+
+  if (brainSections.length > 0) {
+    sections.push(
+      `---\n\n# Project Context (.brain/)\n\n${brainSections.join('\n\n')}`,
+    );
+  }
+
+  return sections.join('\n\n');
+}
+
+// --- Map model string to SDK model name ---
+
+function mapModel(model: string): 'sonnet' | 'opus' | 'haiku' {
+  if (model.includes('opus')) return 'opus';
+  if (model.includes('haiku')) return 'haiku';
+  return 'sonnet';
+}
+
+// --- Runner ---
+
+/**
+ * Spawn an agent session. Reads the agent definition, builds the system prompt,
+ * and calls the Agent SDK. If the agent is sandboxed, runs inside a Vercel Sandbox.
+ */
+export async function runAgent(
+  role: string,
+  projectPath: string,
+  task: string,
+): Promise<RunResult> {
+  // 1. Read agent definition
+  const agentRaw = await readTextFile(join(AGENTS_DIR, `${role}.md`));
+  if (!agentRaw) {
+    throw new Error(`Agent definition not found: ${role}`);
+  }
+  const agent = parseAgentDefinition(agentRaw);
+
+  // 2. Build system prompt
+  const systemPrompt = await buildSystemPrompt(agent, projectPath);
+
+  // 3. Prepare query options
+  const model = mapModel(agent.frontmatter.model);
+
+  console.log(`[runner] Spawning ${agent.frontmatter.name} (${model}, sandboxed: ${agent.frontmatter.sandboxed})`);
+  console.log(`[runner] Task: ${task}`);
+
+  // 4. Run — sandboxed or direct
+  if (agent.frontmatter.sandboxed) {
+    return await runSandboxed(agent, systemPrompt, model, projectPath, task);
+  } else {
+    return await runDirect(agent, systemPrompt, model, projectPath, task);
+  }
+}
+
+async function runDirect(
+  agent: AgentDefinition,
+  systemPrompt: string,
+  model: 'sonnet' | 'opus' | 'haiku',
+  projectPath: string,
+  task: string,
+): Promise<RunResult> {
+  // Clear CLAUDECODE env var to allow spawning from within a Claude Code session
+  const env = { ...process.env };
+  delete env['CLAUDECODE'];
+
+  for await (const message of query({
+    prompt: task,
+    options: {
+      systemPrompt,
+      model,
+      allowedTools: agent.frontmatter.tools,
+      cwd: projectPath,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      env,
+      stderr: (data: string) => process.stderr.write(`[stderr] ${data}`),
+    },
+  })) {
+    // Stream all message types for debugging
+    const msg = message as Record<string, unknown>;
+    if (msg['type'] === 'assistant' && msg['message']) {
+      const assistantMsg = msg['message'] as Record<string, unknown>;
+      const content = assistantMsg['content'];
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block && typeof block === 'object' && 'type' in block) {
+            if (block.type === 'text' && 'text' in block) {
+              console.log(`[${agent.frontmatter.name}]`, block.text);
+            } else if (block.type === 'tool_use' && 'name' in block) {
+              console.log(`[${agent.frontmatter.name}] 🔧 ${block.name}`);
+            }
+          }
+        }
+      }
+    } else if ('result' in msg && typeof msg.result === 'string') {
+      console.log(`[${agent.frontmatter.name}] Result:`, msg.result);
+    }
+  }
+
+  return {
+    agentName: agent.frontmatter.name,
+    sandboxed: false,
+  };
+}
+
+async function runSandboxed(
+  agent: AgentDefinition,
+  systemPrompt: string,
+  model: 'sonnet' | 'opus' | 'haiku',
+  projectPath: string,
+  task: string,
+): Promise<RunResult> {
+  const sandboxConfig: SandboxConfig = {
+    vcpus: 4,
+    timeoutMs: 30 * 60 * 1000,
+  };
+
+  const { syncedFiles } = await withSandbox(
+    projectPath,
+    sandboxConfig,
+    async (_sandbox, workspacePath) => {
+      for await (const message of query({
+        prompt: task,
+        options: {
+          systemPrompt,
+          model,
+          allowedTools: agent.frontmatter.tools,
+          cwd: workspacePath,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+        },
+      })) {
+        if ('result' in message && typeof message.result === 'string') {
+          console.log(`[${agent.frontmatter.name}]`, message.result);
+        }
+      }
+    },
+  );
+
+  console.log(`[runner] Synced ${syncedFiles.length} files back from sandbox`);
+
+  return {
+    agentName: agent.frontmatter.name,
+    sandboxed: true,
+    syncedFiles,
+  };
+}
