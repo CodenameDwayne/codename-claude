@@ -1,9 +1,7 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, type HookEvent, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-// Vercel Sandbox wrapper available for future cloud VM isolation:
-// import { withSandbox, type SandboxConfig } from './sandbox.js';
 
 // Paths
 const CODENAME_HOME = join(process.env['HOME'] ?? '~', '.codename-claude');
@@ -24,13 +22,18 @@ interface AgentFrontmatter {
 
 interface AgentDefinition {
   frontmatter: AgentFrontmatter;
-  systemPromptSection: string; // The markdown body after frontmatter
+  systemPromptSection: string;
 }
 
 export interface RunResult {
   agentName: string;
   sandboxed: boolean;
   syncedFiles?: string[];
+}
+
+export interface RunOptions {
+  hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
+  log?: (message: string) => void;
 }
 
 // --- File Readers ---
@@ -158,13 +161,16 @@ function mapModel(model: string): 'sonnet' | 'opus' | 'haiku' {
 
 /**
  * Spawn an agent session. Reads the agent definition, builds the system prompt,
- * and calls the Agent SDK. If the agent is sandboxed, runs inside a Vercel Sandbox.
+ * and calls the Agent SDK. If the agent is sandboxed, uses the SDK's built-in sandbox.
  */
 export async function runAgent(
   role: string,
   projectPath: string,
   task: string,
+  runOptions: RunOptions = {},
 ): Promise<RunResult> {
+  const log = runOptions.log ?? console.log;
+
   // 1. Read agent definition
   const agentRaw = await readTextFile(join(AGENTS_DIR, `${role}.md`));
   if (!agentRaw) {
@@ -177,29 +183,16 @@ export async function runAgent(
 
   // 3. Prepare query options
   const model = mapModel(agent.frontmatter.model);
+  const sandboxed = agent.frontmatter.sandboxed;
 
-  console.log(`[runner] Spawning ${agent.frontmatter.name} (${model}, sandboxed: ${agent.frontmatter.sandboxed})`);
-  console.log(`[runner] Task: ${task}`);
+  log(`[runner] Spawning ${agent.frontmatter.name} (${model}, sandboxed: ${sandboxed})`);
+  log(`[runner] Task: ${task}`);
 
-  // 4. Run — sandboxed or direct
-  if (agent.frontmatter.sandboxed) {
-    return await runSandboxed(agent, systemPrompt, model, projectPath, task);
-  } else {
-    return await runDirect(agent, systemPrompt, model, projectPath, task);
-  }
-}
-
-async function runDirect(
-  agent: AgentDefinition,
-  systemPrompt: string,
-  model: 'sonnet' | 'opus' | 'haiku',
-  projectPath: string,
-  task: string,
-): Promise<RunResult> {
-  // Clear CLAUDECODE env var to allow spawning from within a Claude Code session
+  // 4. Clear CLAUDECODE env var to allow spawning from within a Claude Code session
   const env = { ...process.env };
   delete env['CLAUDECODE'];
 
+  // 5. Run agent via SDK
   for await (const message of query({
     prompt: task,
     options: {
@@ -210,63 +203,13 @@ async function runDirect(
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       env,
-      stderr: (data: string) => process.stderr.write(`[stderr] ${data}`),
-    },
-  })) {
-    // Stream all message types for debugging
-    const msg = message as Record<string, unknown>;
-    if (msg['type'] === 'assistant' && msg['message']) {
-      const assistantMsg = msg['message'] as Record<string, unknown>;
-      const content = assistantMsg['content'];
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block && typeof block === 'object' && 'type' in block) {
-            if (block.type === 'text' && 'text' in block) {
-              console.log(`[${agent.frontmatter.name}]`, block.text);
-            } else if (block.type === 'tool_use' && 'name' in block) {
-              console.log(`[${agent.frontmatter.name}] 🔧 ${block.name}`);
-            }
-          }
-        }
-      }
-    } else if ('result' in msg && typeof msg.result === 'string') {
-      console.log(`[${agent.frontmatter.name}] Result:`, msg.result);
-    }
-  }
-
-  return {
-    agentName: agent.frontmatter.name,
-    sandboxed: false,
-  };
-}
-
-async function runSandboxed(
-  agent: AgentDefinition,
-  systemPrompt: string,
-  model: 'sonnet' | 'opus' | 'haiku',
-  projectPath: string,
-  task: string,
-): Promise<RunResult> {
-  // Use Agent SDK's built-in sandbox for Bash command isolation.
-  // This uses macOS Seatbelt to restrict what commands can do on the host.
-  // For full cloud VM isolation, see sandbox.ts (Vercel Sandbox wrapper).
-  const env = { ...process.env };
-  delete env['CLAUDECODE'];
-
-  for await (const message of query({
-    prompt: task,
-    options: {
-      systemPrompt,
-      model,
-      allowedTools: agent.frontmatter.tools,
-      cwd: projectPath,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      env,
-      sandbox: {
-        enabled: true,
-        autoAllowBashIfSandboxed: true,
-      },
+      hooks: runOptions.hooks,
+      ...(sandboxed && {
+        sandbox: {
+          enabled: true,
+          autoAllowBashIfSandboxed: true,
+        },
+      }),
       stderr: (data: string) => process.stderr.write(`[stderr] ${data}`),
     },
   })) {
@@ -278,20 +221,20 @@ async function runSandboxed(
         for (const block of content) {
           if (block && typeof block === 'object' && 'type' in block) {
             if (block.type === 'text' && 'text' in block) {
-              console.log(`[${agent.frontmatter.name}]`, block.text);
+              log(`[${agent.frontmatter.name}] ${block.text}`);
             } else if (block.type === 'tool_use' && 'name' in block) {
-              console.log(`[${agent.frontmatter.name}] 🔧 ${block.name}`);
+              log(`[${agent.frontmatter.name}] tool: ${block.name}`);
             }
           }
         }
       }
     } else if ('result' in msg && typeof msg.result === 'string') {
-      console.log(`[${agent.frontmatter.name}] Result:`, msg.result);
+      log(`[${agent.frontmatter.name}] Result: ${msg.result}`);
     }
   }
 
   return {
     agentName: agent.frontmatter.name,
-    sandboxed: true,
+    sandboxed,
   };
 }
