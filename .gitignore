@@ -4,3 +4,4 @@ dist/
 *.tsbuildinfo
 .vercel
 .env*.local
+.worktrees/
