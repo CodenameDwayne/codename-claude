@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { PipelineStage } from './router.js';
 
 export interface RunnerResult {
@@ -50,18 +52,19 @@ export class PipelineEngine {
 
   async run(options: PipelineRunOptions): Promise<PipelineResult> {
     const { stages, project, task } = options;
-    const total = stages.length;
-    let stagesRun = 0;
+    let retries = 0;
 
     this.config.log(`[pipeline] Starting pipeline: ${stages.map(s => s.agent).join(' → ')}`);
     this.config.log(`[pipeline] Task: "${task}"`);
 
-    for (let i = 0; i < stages.length; i++) {
+    let i = 0;
+    let stagesRun = 0;
+
+    while (i < stages.length) {
       const stage = stages[i]!;
-      const stageNum = i + 1;
       const mode = stage.teams ? 'team' : 'standalone';
 
-      this.config.log(`[pipeline] Stage ${stageNum}/${total}: Running ${stage.agent} (${mode})`);
+      this.config.log(`[pipeline] Stage ${i + 1}/${stages.length}: Running ${stage.agent} (${mode})`);
 
       const stageTask = this.buildStageTask(stage.agent, task, i, stages);
 
@@ -72,12 +75,59 @@ export class PipelineEngine {
       });
 
       stagesRun++;
-      this.config.log(`[pipeline] Stage ${stageNum}/${total}: ${stage.agent} completed`);
+      this.config.log(`[pipeline] Stage ${i + 1}/${stages.length}: ${stage.agent} completed`);
+
+      // Check review verdict after reviewer stages
+      if (stage.agent === 'reviewer' || stage.agent.includes('review')) {
+        const verdict = await this.parseReviewVerdict(project);
+
+        if (verdict === 'APPROVE') {
+          this.config.log(`[pipeline] Reviewer verdict: APPROVE`);
+          i++;
+          continue;
+        }
+
+        if (retries >= this.maxRetries) {
+          this.config.log(`[pipeline] Max retries (${this.maxRetries}) reached. Stopping.`);
+          return { completed: false, stagesRun, retries, finalVerdict: verdict };
+        }
+
+        retries++;
+
+        if (verdict === 'REDESIGN') {
+          // Find the architect stage (or earliest non-reviewer stage)
+          const architectIdx = stages.findIndex(s => s.agent === 'architect' || s.agent.includes('architect'));
+          const restartIdx = architectIdx >= 0 ? architectIdx : 0;
+          this.config.log(`[pipeline] Reviewer verdict: REDESIGN — restarting from ${stages[restartIdx]!.agent} (retry ${retries})`);
+          i = restartIdx;
+          continue;
+        }
+
+        // REVISE — find the builder stage before this reviewer
+        const builderIdx = stages.slice(0, i).reverse().findIndex(s => s.agent === 'builder' || s.agent.includes('build'));
+        const restartIdx = builderIdx >= 0 ? i - 1 - builderIdx : Math.max(0, i - 1);
+        this.config.log(`[pipeline] Reviewer verdict: REVISE — re-running ${stages[restartIdx]!.agent} (retry ${retries})`);
+        i = restartIdx;
+        continue;
+      }
+
+      i++;
     }
 
-    this.config.log(`[pipeline] Pipeline complete (${stagesRun} stages, 0 retries)`);
+    this.config.log(`[pipeline] Pipeline complete (${stagesRun} stages, ${retries} retries)`);
+    return { completed: true, stagesRun, retries, finalVerdict: 'APPROVE' };
+  }
 
-    return { completed: true, stagesRun, retries: 0 };
+  private async parseReviewVerdict(project: string): Promise<string> {
+    try {
+      const reviewPath = join(project, '.brain', 'REVIEW.md');
+      const content = await readFile(reviewPath, 'utf-8');
+      const match = content.match(/Verdict:\s*(APPROVE|REVISE|REDESIGN)/i);
+      return match ? match[1]!.toUpperCase() : 'APPROVE';
+    } catch {
+      // No REVIEW.md — assume approved
+      return 'APPROVE';
+    }
   }
 
   private buildStageTask(agent: string, originalTask: string, index: number, stages: PipelineStage[]): string {
