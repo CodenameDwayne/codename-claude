@@ -95,7 +95,19 @@ Return ONLY the JSON array, no explanation.`;
 
 function createDefaultClient(): CreateMessageFn {
   const client = new Anthropic();
-  return (params) => client.messages.create(params as Parameters<typeof client.messages.create>[0]);
+  return async (params) => {
+    const response = await client.messages.create({
+      model: params.model,
+      max_tokens: params.max_tokens,
+      messages: params.messages as Anthropic.MessageParam[],
+    });
+    return {
+      content: response.content.map(block => ({
+        type: block.type,
+        text: block.type === 'text' ? block.text : undefined,
+      })),
+    };
+  };
 }
 
 export async function loadAgentSummaries(agentsDir: string): Promise<AgentSummary[]> {

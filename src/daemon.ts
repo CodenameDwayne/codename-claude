@@ -14,6 +14,8 @@ import {
   updateLastSession,
 } from './state/projects.js';
 import { runAgent } from './agents/runner.js';
+import { PipelineEngine } from './pipeline/engine.js';
+import { routeTask, loadAgentSummaries } from './pipeline/router.js';
 import {
   createPostToolUseHook,
   createSessionEndHook,
@@ -32,6 +34,7 @@ const STATE_DIR = join(CODENAME_HOME, 'state');
 const BUDGET_FILE = join(STATE_DIR, 'budget.json');
 const PROJECTS_FILE = join(STATE_DIR, 'projects.json');
 const QUEUE_FILE = join(STATE_DIR, 'queue.json');
+const AGENTS_DIR = join(CODENAME_HOME, 'agents');
 
 // --- Config ---
 
@@ -133,6 +136,41 @@ async function main(): Promise<void> {
     TaskCompleted: [{ hooks: [taskCompletedHook] }],
   };
 
+  // Create pipeline engine
+  const pipelineEngine = new PipelineEngine({
+    runner: (role, project, task, options) => runAgent(role, project, task, {
+      ...options,
+      hooks,
+    }),
+    log,
+  });
+
+  async function readTextFileSafe(path: string): Promise<string> {
+    try { return await readFile(path, 'utf-8'); } catch { return ''; }
+  }
+
+  async function runPipeline(
+    project: string,
+    task: string,
+    mode: 'standalone' | 'team',
+    agent?: string,
+  ) {
+    const resolvedProject = resolveProjectPath(project);
+
+    if (agent && agent !== 'pipeline') {
+      // Manual agent run — skip router
+      const stages = [{ agent, teams: mode === 'team' }];
+      return pipelineEngine.run({ stages, project: resolvedProject, task });
+    }
+
+    // Full pipeline — use LLM router
+    const agents = await loadAgentSummaries(AGENTS_DIR);
+    const projectContext = await readTextFileSafe(join(resolvedProject, '.brain', 'PROJECT.md'));
+    const stages = await routeTask({ task, agents, projectContext });
+    log(`[pipeline] Router selected: ${stages.map(s => s.agent).join(' → ')}`);
+    return pipelineEngine.run({ stages, project: resolvedProject, task });
+  }
+
   // Build heartbeat
   const heartbeat = new HeartbeatLoop(
     {
@@ -140,8 +178,7 @@ async function main(): Promise<void> {
       queue,
       canRunAgent: () => canRunAgent(budgetConfig),
       recordUsage: (count) => recordUsage(count, budgetConfig),
-      runAgent: (role, project, task, mode) =>
-        runAgent(role, resolveProjectPath(project), task, { hooks, log, mode }),
+      runPipeline,
       log,
     },
     { intervalMs: config.heartbeatIntervalMs ?? 60_000 },
