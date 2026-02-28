@@ -81,7 +81,7 @@ The system scales up and down based on how work enters:
 
 ### Mode 1: Interactive (you're at the keyboard)
 
-You use the `cc` CLI to start an interactive Codename Claude session in a registered project. The daemon constructs the full system prompt (identity + skills + project context from `.brain/`) and launches a Claude Code session via the Agent SDK. You drive, it assists — but with full Codename Claude context. Alternatively, you can use normal `claude` in the same project and it just sees the source code — no Codename Claude behavior.
+You use the `codename` CLI to start an interactive Codename Claude session in a registered project. The daemon constructs the full system prompt (identity + skills + project context from `.brain/`) and launches a Claude Code session via the Agent SDK. You drive, it assists — but with full Codename Claude context. Alternatively, you can use normal `claude` in the same project and it just sees the source code — no Codename Claude behavior.
 
 ### Mode 2: Agent Teams (heartbeat-triggered pipeline)
 
@@ -114,10 +114,10 @@ Heartbeat loop (always running, zero cost)
   ├─ CLI command received      → Mode 2 (team) or Mode 3 (standalone)
   ├─ File change detected      → Mode 3 (standalone)
   │
-  └─ You run `cc` interactively → Mode 1 (daemon constructs session for you)
+  └─ You run `codename` interactively → Mode 1 (daemon constructs session for you)
 ```
 
-All three modes share the same `.brain/` directory. Work done by a heartbeat-triggered agent at 9am is visible when you open a `cc` interactive session at 10am. If you open normal `claude` instead, you won't see Codename Claude behavior — just regular Claude Code.
+All three modes share the same `.brain/` directory. Work done by a heartbeat-triggered agent at 9am is visible when you open a `codename` interactive session at 10am. If you open normal `claude` instead, you won't see Codename Claude behavior — just regular Claude Code.
 
 ## Agent Roles
 
@@ -287,7 +287,7 @@ Codename Claude is a standalone application, completely separated from Claude Co
 
 | | Normal Claude Code | Codename Claude |
 |---|---|---|
-| **Command** | `claude` | `cc` (CLI) or daemon |
+| **Command** | `claude` | `codename` (CLI) or daemon |
 | **Config** | `~/.claude/` | `~/.codename-claude/` |
 | **Purpose** | Interactive coding assistant | Autonomous PM + Dev system |
 | **Who drives** | You | Heartbeat + agents |

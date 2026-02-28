@@ -18,13 +18,13 @@ The IPC layer (`src/ipc/`) uses newline-delimited JSON over a Unix domain socket
 - Simple protocol — one JSON line per message, no framing complexity
 
 ### PID file + socket combo is reliable for lifecycle management
-`cc start` spawns the daemon as a detached child process (`spawn` with `detached: true`, `child.unref()`). The daemon writes its PID to `~/.codename-claude/daemon.pid` on startup, and `cc status` uses `process.kill(pid, 0)` to verify the process is alive without sending a signal. `cc stop` sends a `shutdown` IPC command and polls for PID file removal.
+`codename start` spawns the daemon as a detached child process (`spawn` with `detached: true`, `child.unref()`). The daemon writes its PID to `~/.codename-claude/daemon.pid` on startup, and `codename status` uses `process.kill(pid, 0)` to verify the process is alive without sending a signal. `codename stop` sends a `shutdown` IPC command and polls for PID file removal.
 
 ### Chokidar file watcher with debounce works well for BACKLOG.md changes
 The `FileWatcher` class watches `.brain/BACKLOG.md` in all registered projects with per-project debounce. Key design: the debounce timer is per-project (stored in a `Map<string, Timeout>`), so rapid edits to one project don't suppress triggers for another project. The 5-second default debounce prevents multiple fires from editor save operations.
 
 ### Existing architecture extended cleanly again
-The daemon's `WorkQueue` serves as the universal integration point. Webhook triggers, file watcher triggers, and CLI `cc run` commands all enqueue work items. The heartbeat loop processes them uniformly through budget checks and concurrency control. No special paths for any trigger type.
+The daemon's `WorkQueue` serves as the universal integration point. Webhook triggers, file watcher triggers, and CLI `codename run` commands all enqueue work items. The heartbeat loop processes them uniformly through budget checks and concurrency control. No special paths for any trigger type.
 
 ### vitest.config.ts prevented test duplication
 After `tsc` build created `dist/` with compiled test files, vitest started running both `src/` and `dist/` copies. Adding `vitest.config.ts` with `include: ['src/**/*.test.ts']` fixed this permanently. Also added `exclude` entries to `tsconfig.json` to keep test files out of production builds.
@@ -111,7 +111,7 @@ vitest.config.ts                — Restricts test discovery to src/ only
 src/
 ├── daemon.ts                   — Added: IPC server, PID file, file watcher, project registration
 │                                 via IPC, queue-list command, shutdown via IPC, loadConfig webhook fix
-package.json                    — Added: bin entry for cc, chokidar dependency
+package.json                    — Added: bin entry for codename, chokidar dependency
 tsconfig.json                   — Added: exclude for test files and vitest.config.ts
 ```
 
@@ -130,8 +130,8 @@ tsconfig.json                   — Added: exclude for test files and vitest.con
 3. **Test files must be in tsconfig exclude** — otherwise `tsc` puts `.test.js` files in `dist/` which doubles test runs.
 4. **Unix socket cleanup** — the IPC server deletes the socket file on stop. If the daemon crashes without cleanup, the stale socket file prevents restart. The server already handles this (removes existing socket on start), but be aware of it.
 5. **PID file can go stale** — if the daemon is killed with SIGKILL (not SIGTERM/SIGINT), the PID file won't be cleaned up. `isDaemonRunning()` handles this correctly by checking `process.kill(pid, 0)`, but the file will persist.
-6. **`cc start` uses a 1.5s sleep** to wait for daemon startup — if the system is slow, this may not be enough. Consider polling the PID file instead.
+6. **`codename start` uses a 1.5s sleep** to wait for daemon startup — if the system is slow, this may not be enough. Consider polling the PID file instead.
 7. **File watcher has timing-based tests** — 5 watcher tests use real timers and `setTimeout` for debounce verification. They add ~8 seconds to the test suite. If test speed becomes an issue, consider extracting the debounce logic into a pure-function unit test.
 8. **All Phase 3 gotchas still apply** — especially: hook callbacks must use `HookInput` union type, `ExitReason` valid values, webhook handler is fire-and-forget, Agent Teams is experimental.
-9. **`cc interactive` spawns raw `claude` process** — it looks for `claude` in PATH. If claude isn't installed globally, this will fail. Could be improved to use `findClaudeExecutable()` from `runner.ts`.
-10. **The daemon log file grows unbounded** — `cc logs` tails `~/.codename-claude/daemon.log` but nothing rotates it. Phase 5 or later should add log rotation or size-based truncation.
+9. **`codename interactive` spawns raw `claude` process** — it looks for `claude` in PATH. If claude isn't installed globally, this will fail. Could be improved to use `findClaudeExecutable()` from `runner.ts`.
+10. **The daemon log file grows unbounded** — `codename logs` tails `~/.codename-claude/daemon.log` but nothing rotates it. Phase 5 or later should add log rotation or size-based truncation.

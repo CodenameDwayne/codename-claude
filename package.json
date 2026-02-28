@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/daemon.js",
   "bin": {
-    "cc": "./dist/cli.js"
+    "codename": "./dist/cli.js"
   },
   "scripts": {
     "dev": "tsx src/daemon.ts",

@@ -51,7 +51,7 @@ export async function sendCommand(
         clearTimeout(timer);
         if ((err as NodeJS.ErrnoException).code === 'ECONNREFUSED' ||
             (err as NodeJS.ErrnoException).code === 'ENOENT') {
-          reject(new Error('Daemon is not running. Start it with: cc start'));
+          reject(new Error('Daemon is not running. Start it with: codename start'));
         } else {
           reject(err);
         }

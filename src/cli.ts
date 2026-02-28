@@ -169,17 +169,17 @@ async function cmdStatus(): Promise<void> {
 }
 
 async function cmdRun(args: string[]): Promise<void> {
-  // cc run scout [project] or cc run team [project] "task"
+  // codename run scout [project] or codename run team [project] "task"
   const subCmd = args[0];
   if (!subCmd) {
-    die('Usage: cc run <agent|team> [project] ["task"]');
+    die('Usage: codename run <agent|team> [project] ["task"]');
   }
 
   if (subCmd === 'team') {
     const project = args[1];
     const task = args[2];
     if (!project || !task) {
-      die('Usage: cc run team <project> "task description"');
+      die('Usage: codename run team <project> "task description"');
     }
     const response = await send({
       type: 'run',
@@ -202,7 +202,7 @@ async function cmdRun(args: string[]): Promise<void> {
   const project = args[1];
   const task = args[2] ?? `Run ${agent} agent session`;
   if (!project) {
-    die(`Usage: cc run ${agent} <project> ["task"]`);
+    die(`Usage: codename run ${agent} <project> ["task"]`);
   }
 
   const response = await send({
@@ -243,7 +243,7 @@ async function cmdProjectsList(): Promise<void> {
 async function cmdProjectsAdd(args: string[]): Promise<void> {
   const rawPath = args[0];
   if (!rawPath) {
-    die('Usage: cc projects add <path> [name]');
+    die('Usage: codename projects add <path> [name]');
   }
   const fullPath = resolve(rawPath);
   const name = args[1];
@@ -266,7 +266,7 @@ async function cmdProjectsAdd(args: string[]): Promise<void> {
 async function cmdProjectsRemove(args: string[]): Promise<void> {
   const pathOrName = args[0];
   if (!pathOrName) {
-    die('Usage: cc projects remove <path|name>');
+    die('Usage: codename projects remove <path|name>');
   }
 
   const response = await send({ type: 'projects-remove', pathOrName });
@@ -331,7 +331,7 @@ async function cmdQueue(): Promise<void> {
 async function cmdInteractive(args: string[]): Promise<void> {
   const project = args[0];
   if (!project) {
-    die('Usage: cc interactive <project>');
+    die('Usage: codename interactive <project>');
   }
 
   // Resolve project path — check if daemon knows it, or use as-is
@@ -372,7 +372,7 @@ async function main(): Promise<void> {
     console.log(`
 Codename Claude CLI
 
-Usage: cc <command> [options]
+Usage: codename <command> [options]
 
 Commands:
   start                        Start the daemon
@@ -426,7 +426,7 @@ Commands:
       await cmdInteractive(args.slice(1));
       break;
     default:
-      die(`Unknown command: ${command}. Run 'cc --help' for usage.`);
+      die(`Unknown command: ${command}. Run 'codename --help' for usage.`);
   }
 }
 

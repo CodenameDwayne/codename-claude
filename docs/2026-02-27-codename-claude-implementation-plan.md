@@ -500,22 +500,22 @@ Add webhook config to `config.json`:
 
 ### Task 4.1 — Build the CLI interface
 
-Create a `cc` command that talks to the running daemon.
+Create a `codename` command that talks to the running daemon.
 
 **Subcommands:**
 | Command | What it does |
 |---|---|
-| `cc start` | Start the daemon (if not running) |
-| `cc stop` | Stop the daemon |
-| `cc status` | Show: running?, projects, budget remaining, queue |
-| `cc run scout [project]` | Manually trigger Scout |
-| `cc run team [project] "task"` | Manually trigger a full team pipeline |
-| `cc projects list` | List registered projects |
-| `cc projects add [path]` | Register a new project (copies .brain/ template) |
-| `cc projects remove [path]` | Unregister a project |
-| `cc logs` | Tail the daemon logs |
-| `cc queue` | Show queued work |
-| `cc interactive [project]` | Start an interactive Codename Claude session |
+| `codename start` | Start the daemon (if not running) |
+| `codename stop` | Stop the daemon |
+| `codename status` | Show: running?, projects, budget remaining, queue |
+| `codename run scout [project]` | Manually trigger Scout |
+| `codename run team [project] "task"` | Manually trigger a full team pipeline |
+| `codename projects list` | List registered projects |
+| `codename projects add [path]` | Register a new project (copies .brain/ template) |
+| `codename projects remove [path]` | Unregister a project |
+| `codename logs` | Tail the daemon logs |
+| `codename queue` | Show queued work |
+| `codename interactive [project]` | Start an interactive Codename Claude session |
 
 **Communication:** CLI talks to daemon via Unix socket (`~/.codename-claude/daemon.sock`) or writes to a command file the heartbeat picks up.
 
@@ -541,21 +541,21 @@ Add cron trigger:
 
 Test: populate .brain/ with many entries, trigger janitor, verify pruning and archiving.
 
-### Task 4.4 — Add package.json bin entry for `cc` command
+### Task 4.4 — Add package.json bin entry for `codename` command
 
 Add to `codename-claude/package.json`:
 ```json
-{ "bin": { "cc": "./dist/cli.js" } }
+{ "bin": { "codename": "./dist/cli.js" } }
 ```
 
-`bun link` to make `cc` available globally.
+`bun link` to make `codename` available globally.
 
 ### Phase 4 Done When:
 
-- [x] `cc` CLI works for all subcommands
+- [x] `codename` CLI works for all subcommands
 - [x] File watcher triggers on .brain/ changes
 - [x] Memory janitor prunes and archives on schedule
-- [x] `cc interactive` starts a full Codename Claude session at your keyboard
+- [x] `codename interactive` starts a full Codename Claude session at your keyboard
 
 > **✅ Phase 4 completed 2026-02-27.** Session notes: [2026-02-27-phase-4-session-notes.md](2026-02-27-phase-4-session-notes.md)
 
@@ -590,7 +590,7 @@ Later: add webhook notifications (Slack, Discord) if needed.
 3. Receive notification with Remote Control URL
 4. Connect from phone, observe, steer
 5. Receive completion notification
-6. Open `cc interactive` — verify full context
+6. Open `codename interactive` — verify full context
 
 ### Phase 5 Done When:
 
@@ -607,7 +607,7 @@ Later: add webhook notifications (Slack, Discord) if needed.
 Phase 1: Foundation     → The brain (files) + app scaffold + sandbox wrapper + manual agent run
 Phase 2: Heartbeat      → Daemon loop + cron triggers + Scout on schedule
 Phase 3: Agent Teams    → Full pipeline + review loop + sandboxed Builder/Reviewer + webhooks
-Phase 4: CLI & Triggers → cc command + file watchers + maintenance agents
+Phase 4: CLI & Triggers → codename command + file watchers + maintenance agents
 Phase 5: Remote Control → Mobile observation + notifications
 ```
 
