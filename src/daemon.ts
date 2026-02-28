@@ -1,12 +1,18 @@
 import 'dotenv/config';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, unlink, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CronTrigger, type TriggerConfig } from './triggers/cron.js';
 import { WebhookServer, type WebhookConfig } from './triggers/webhook.js';
+import { FileWatcher } from './triggers/watcher.js';
 import { WorkQueue } from './heartbeat/queue.js';
 import { HeartbeatLoop } from './heartbeat/loop.js';
 import { recordUsage, canRunAgent, getRemainingBudget, type BudgetConfig } from './state/budget.js';
-import { listProjects, updateLastSession } from './state/projects.js';
+import {
+  listProjects,
+  registerProject,
+  unregisterProject,
+  updateLastSession,
+} from './state/projects.js';
 import { runAgent } from './agents/runner.js';
 import {
   createPostToolUseHook,
@@ -14,6 +20,9 @@ import {
   createTeammateIdleHook,
   createTaskCompletedHook,
 } from './hooks/hooks.js';
+import { IpcServer } from './ipc/server.js';
+import type { IpcCommand, IpcResponse } from './ipc/protocol.js';
+import { SOCKET_PATH_DEFAULT, PID_FILE_DEFAULT } from './ipc/protocol.js';
 
 // --- Paths ---
 
@@ -60,6 +69,7 @@ export async function loadConfig(configPath: string = CONFIG_FILE): Promise<Daem
         ...parsed.budget,
       },
       heartbeatIntervalMs: parsed.heartbeatIntervalMs,
+      webhook: parsed.webhook,
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -175,16 +185,137 @@ async function main(): Promise<void> {
     log(`  Webhook:   listening on port ${config.webhook.port}`);
   }
 
+  // Start file watcher for BACKLOG.md changes
+  const projectPaths = config.projects.map((p) => p.path);
+  const fileWatcher = new FileWatcher(
+    { projectPaths },
+    (result) => {
+      log(`[watcher] triggered: ${result.triggerName} → ${result.agent}`);
+      queue.enqueue({
+        triggerName: result.triggerName,
+        project: result.project,
+        agent: result.agent,
+        task: result.task,
+        mode: result.mode,
+        enqueuedAt: Date.now(),
+      }).catch((err) => {
+        log(`[watcher] failed to enqueue: ${err}`);
+      });
+    },
+    log,
+  );
+  fileWatcher.start();
+
   // Start heartbeat
   heartbeat.start();
+
+  // --- IPC Server for CLI communication ---
+
+  async function handleIpcCommand(command: IpcCommand): Promise<IpcResponse> {
+    switch (command.type) {
+      case 'status': {
+        const projectList = await listProjects(PROJECTS_FILE);
+        const budgetRemaining = await getRemainingBudget(budgetConfig);
+        const queueLen = await queue.size();
+        return {
+          ok: true,
+          data: {
+            running: true,
+            pid: process.pid,
+            uptime: process.uptime(),
+            tickCount: heartbeat.getTickCount(),
+            heartbeatRunning: heartbeat.isRunning(),
+            projects: projectList.length,
+            triggers: triggers.length,
+            budgetRemaining,
+            budgetMax: config.budget.maxPromptsPerWindow,
+            queueSize: queueLen,
+          },
+        };
+      }
+
+      case 'run': {
+        const projectPath = resolveProjectPath(command.project);
+        // Enqueue via the work queue so the heartbeat picks it up (respects concurrency lock)
+        await queue.enqueue({
+          triggerName: `cli:${command.agent}`,
+          project: projectPath,
+          agent: command.agent,
+          task: command.task,
+          mode: command.mode,
+          enqueuedAt: Date.now(),
+        });
+        return { ok: true, data: { queued: true, agent: command.agent, project: command.project } };
+      }
+
+      case 'projects-list': {
+        const projectList = await listProjects(PROJECTS_FILE);
+        return { ok: true, data: { projects: projectList } };
+      }
+
+      case 'projects-add': {
+        const name = command.name ?? command.path.split('/').pop() ?? 'unnamed';
+        const entry = await registerProject(command.path, name, PROJECTS_FILE);
+        // Also add to the in-memory lookup
+        projectPathsByName.set(name, command.path);
+        return { ok: true, data: { registered: entry } };
+      }
+
+      case 'projects-remove': {
+        await unregisterProject(command.pathOrName, PROJECTS_FILE);
+        // Remove from in-memory lookup
+        projectPathsByName.delete(command.pathOrName);
+        return { ok: true, data: { removed: command.pathOrName } };
+      }
+
+      case 'queue-list': {
+        // Read the queue state directly for display
+        const items: unknown[] = [];
+        const queueLen = await queue.size();
+        // Peek doesn't give all items, so read the state file directly
+        try {
+          const raw = await readFile(QUEUE_FILE, 'utf-8');
+          const state = JSON.parse(raw) as { items: unknown[] };
+          items.push(...state.items);
+        } catch {
+          // empty queue
+        }
+        return { ok: true, data: { size: queueLen, items } };
+      }
+
+      case 'shutdown': {
+        log('[ipc] shutdown requested via CLI');
+        // Respond first, then shut down
+        setTimeout(() => { shutdown('IPC'); }, 100);
+        return { ok: true, data: { shutting_down: true } };
+      }
+
+      default: {
+        return { ok: false, error: `Unknown command type: ${(command as { type: string }).type}` };
+      }
+    }
+  }
+
+  const ipcServer = new IpcServer(SOCKET_PATH_DEFAULT, handleIpcCommand, log);
+  await ipcServer.start();
+  log(`  IPC:       ${SOCKET_PATH_DEFAULT}`);
+
+  // Write PID file
+  await mkdir(STATE_DIR, { recursive: true });
+  await writeFile(PID_FILE_DEFAULT, String(process.pid));
+  log(`  PID:       ${process.pid} (${PID_FILE_DEFAULT})`);
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     log(`Received ${signal} — shutting down...`);
     heartbeat.stop();
+    await fileWatcher.stop();
+    await ipcServer.stop();
     if (webhookServer) {
       await webhookServer.stop();
     }
+    // Clean up PID file
+    await unlink(PID_FILE_DEFAULT).catch(() => {});
     log(`Heartbeat stopped after ${heartbeat.getTickCount()} ticks. Goodbye.`);
     process.exit(0);
   };
