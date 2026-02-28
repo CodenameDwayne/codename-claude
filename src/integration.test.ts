@@ -1,14 +1,14 @@
 /**
- * Integration tests for the Phase 3 Agent Teams pipeline.
+ * Integration tests for the pipeline orchestration.
  *
- * These tests validate the full wiring from triggers through to the agent runner,
- * using mocked SDK calls to avoid real API consumption. They verify:
+ * These tests validate the full wiring from triggers through to the pipeline engine,
+ * using mocked runners to avoid real API consumption. They verify:
  *
- * 1. Webhook → queue → heartbeat → runner pipeline
- * 2. Team mode sets correct env vars and maxTurns
- * 3. Heartbeat passes mode through to runner
+ * 1. Webhook → queue → heartbeat → pipeline
+ * 2. Team mode passes through correctly
+ * 3. Heartbeat passes mode through to pipeline
  * 4. Webhook server enqueues work correctly
- * 5. Team hooks fire alongside standard hooks
+ * 5. Pipeline result stagesRun drives prompt estimation
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHmac } from 'node:crypto';
@@ -19,7 +19,7 @@ import { HeartbeatLoop, type HeartbeatDeps } from './heartbeat/loop.js';
 import { WorkQueue } from './heartbeat/queue.js';
 import { CronTrigger } from './triggers/cron.js';
 import { WebhookServer, type WebhookConfig, type WebhookTriggerResult } from './triggers/webhook.js';
-import type { RunResult } from './agents/runner.js';
+import type { PipelineResult } from './pipeline/engine.js';
 
 const TEST_STATE_DIR = join(import.meta.dirname, '../.test-state/integration');
 const QUEUE_FILE = join(TEST_STATE_DIR, 'queue.json');
@@ -40,11 +40,11 @@ describe('Pipeline: webhook → queue → heartbeat → runner', () => {
     vi.useRealTimers(); // Need real timers for HTTP server
 
     const queue = new WorkQueue(QUEUE_FILE);
-    const runCalls: Array<{ role: string; project: string; task: string; mode: string }> = [];
+    const pipelineCalls: Array<{ project: string; task: string; mode: string; agent?: string }> = [];
 
-    const runAgent = vi.fn(async (_role: string, _project: string, _task: string, mode: 'standalone' | 'team'): Promise<RunResult> => {
-      runCalls.push({ role: _role, project: _project, task: _task, mode });
-      return { agentName: 'Team Lead', sandboxed: false, mode };
+    const runPipeline = vi.fn(async (project: string, task: string, mode: 'standalone' | 'team', agent?: string): Promise<PipelineResult> => {
+      pipelineCalls.push({ project, task, mode, agent });
+      return { completed: true, stagesRun: 3, retries: 0 };
     });
 
     // 1. Start webhook server that enqueues to our queue
@@ -121,7 +121,7 @@ describe('Pipeline: webhook → queue → heartbeat → runner', () => {
         queue,
         canRunAgent: async () => true,
         recordUsage: async () => {},
-        runAgent,
+        runPipeline,
         log: () => {},
       };
       const heartbeat = new HeartbeatLoop(deps);
@@ -130,11 +130,11 @@ describe('Pipeline: webhook → queue → heartbeat → runner', () => {
       expect(tickResult.action).toBe('ran_agent');
       expect(tickResult.source).toBe('queue');
 
-      // 5. Verify runner was called with team mode
-      expect(runCalls).toHaveLength(1);
-      expect(runCalls[0]!.role).toBe('team-lead');
-      expect(runCalls[0]!.mode).toBe('team');
-      expect(runCalls[0]!.project).toBe('cc-test');
+      // 5. Verify pipeline was called with correct args
+      expect(pipelineCalls).toHaveLength(1);
+      expect(pipelineCalls[0]!.agent).toBe('team-lead');
+      expect(pipelineCalls[0]!.mode).toBe('team');
+      expect(pipelineCalls[0]!.project).toBe('cc-test');
 
       // 6. Queue should be empty after processing
       expect(await queue.isEmpty()).toBe(true);
@@ -145,11 +145,11 @@ describe('Pipeline: webhook → queue → heartbeat → runner', () => {
 });
 
 describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
-  test('team cron trigger passes mode through to runner', async () => {
-    const runCalls: Array<{ role: string; mode: string }> = [];
-    const runAgent = vi.fn(async (_role: string, _project: string, _task: string, mode: 'standalone' | 'team'): Promise<RunResult> => {
-      runCalls.push({ role: _role, mode });
-      return { agentName: 'Team Lead', sandboxed: false, mode };
+  test('team cron trigger passes mode through to pipeline', async () => {
+    const pipelineCalls: Array<{ agent?: string; mode: string }> = [];
+    const runPipeline = vi.fn(async (_project: string, _task: string, mode: 'standalone' | 'team', agent?: string): Promise<PipelineResult> => {
+      pipelineCalls.push({ agent, mode });
+      return { completed: true, stagesRun: 3, retries: 0 };
     });
 
     const trigger = new CronTrigger({
@@ -169,22 +169,22 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
       queue: new WorkQueue(QUEUE_FILE),
       canRunAgent: async () => true,
       recordUsage: async () => {},
-      runAgent,
+      runPipeline,
       log: () => {},
     };
     const heartbeat = new HeartbeatLoop(deps);
     const result = await heartbeat.tick();
 
     expect(result.action).toBe('ran_agent');
-    expect(runCalls[0]!.role).toBe('team-lead');
-    expect(runCalls[0]!.mode).toBe('team');
+    expect(pipelineCalls[0]!.agent).toBe('team-lead');
+    expect(pipelineCalls[0]!.mode).toBe('team');
   });
 
   test('standalone cron trigger passes standalone mode', async () => {
-    const runCalls: Array<{ role: string; mode: string }> = [];
-    const runAgent = vi.fn(async (_role: string, _project: string, _task: string, mode: 'standalone' | 'team'): Promise<RunResult> => {
-      runCalls.push({ role: _role, mode });
-      return { agentName: 'Scout', sandboxed: false, mode };
+    const pipelineCalls: Array<{ mode: string }> = [];
+    const runPipeline = vi.fn(async (_project: string, _task: string, mode: 'standalone' | 'team'): Promise<PipelineResult> => {
+      pipelineCalls.push({ mode });
+      return { completed: true, stagesRun: 1, retries: 0 };
     });
 
     const trigger = new CronTrigger({
@@ -204,24 +204,24 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
       queue: new WorkQueue(QUEUE_FILE),
       canRunAgent: async () => true,
       recordUsage: async () => {},
-      runAgent,
+      runPipeline,
       log: () => {},
     };
     const heartbeat = new HeartbeatLoop(deps);
     await heartbeat.tick();
 
-    expect(runCalls[0]!.mode).toBe('standalone');
+    expect(pipelineCalls[0]!.mode).toBe('standalone');
   });
 
-  test('team mode records higher prompt usage than standalone', async () => {
+  test('multi-stage pipeline records higher prompt usage than single-stage', async () => {
     const usageRecords: number[] = [];
     const recordUsage = vi.fn(async (count: number) => { usageRecords.push(count); });
 
-    const runAgent = vi.fn(async (_r: string, _p: string, _t: string, mode: 'standalone' | 'team'): Promise<RunResult> => {
-      return { agentName: 'test', sandboxed: false, mode };
+    // Multi-stage pipeline (team trigger — returns stagesRun: 3)
+    const multiStagePipeline = vi.fn(async (): Promise<PipelineResult> => {
+      return { completed: true, stagesRun: 3, retries: 0 };
     });
 
-    // Team trigger
     const teamTrigger = new CronTrigger({
       name: 'team-build',
       type: 'cron',
@@ -239,13 +239,17 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
       queue: new WorkQueue(QUEUE_FILE),
       canRunAgent: async () => true,
       recordUsage,
-      runAgent,
+      runPipeline: multiStagePipeline,
       log: () => {},
     };
     const teamLoop = new HeartbeatLoop(teamDeps);
     await teamLoop.tick();
 
-    // Standalone trigger
+    // Single-stage pipeline (standalone — returns stagesRun: 1)
+    const singleStagePipeline = vi.fn(async (): Promise<PipelineResult> => {
+      return { completed: true, stagesRun: 1, retries: 0 };
+    });
+
     const standaloneTrigger = new CronTrigger({
       name: 'scout-run',
       type: 'cron',
@@ -263,13 +267,13 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
       queue: new WorkQueue(QUEUE_FILE),
       canRunAgent: async () => true,
       recordUsage,
-      runAgent,
+      runPipeline: singleStagePipeline,
       log: () => {},
     };
     const standaloneLoop = new HeartbeatLoop(standaloneDeps);
     await standaloneLoop.tick();
 
-    // Team should record more prompts
+    // Multi-stage should record more prompts (3 * 10 = 30 vs 1 * 10 = 10)
     expect(usageRecords[0]).toBeGreaterThan(usageRecords[1]!);
   });
 });
@@ -277,10 +281,10 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
 describe('Pipeline: budget-low queuing preserves mode', () => {
   test('team trigger queued and later dequeued retains team mode', async () => {
     const queue = new WorkQueue(QUEUE_FILE);
-    const runCalls: Array<{ mode: string }> = [];
-    const runAgent = vi.fn(async (_r: string, _p: string, _t: string, mode: 'standalone' | 'team'): Promise<RunResult> => {
-      runCalls.push({ mode });
-      return { agentName: 'Team Lead', sandboxed: false, mode };
+    const pipelineCalls: Array<{ mode: string }> = [];
+    const runPipeline = vi.fn(async (_project: string, _task: string, mode: 'standalone' | 'team'): Promise<PipelineResult> => {
+      pipelineCalls.push({ mode });
+      return { completed: true, stagesRun: 1, retries: 0 };
     });
 
     const trigger = new CronTrigger({
@@ -301,7 +305,7 @@ describe('Pipeline: budget-low queuing preserves mode', () => {
       queue,
       canRunAgent: async () => false,
       recordUsage: async () => {},
-      runAgent,
+      runPipeline,
       log: () => {},
     };
     const loop1 = new HeartbeatLoop(lowBudgetDeps);
@@ -314,13 +318,13 @@ describe('Pipeline: budget-low queuing preserves mode', () => {
       queue,
       canRunAgent: async () => true,
       recordUsage: async () => {},
-      runAgent,
+      runPipeline,
       log: () => {},
     };
     const loop2 = new HeartbeatLoop(okBudgetDeps);
     const result2 = await loop2.tick();
     expect(result2.action).toBe('ran_agent');
     expect(result2.source).toBe('queue');
-    expect(runCalls[0]!.mode).toBe('team');
+    expect(pipelineCalls[0]!.mode).toBe('team');
   });
 });

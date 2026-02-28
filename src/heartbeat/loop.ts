@@ -1,13 +1,13 @@
 import type { CronTrigger } from '../triggers/cron.js';
-import type { WorkQueue, QueueItem } from './queue.js';
-import type { RunResult } from '../agents/runner.js';
+import type { WorkQueue } from './queue.js';
+import type { PipelineResult } from '../pipeline/engine.js';
 
 export interface HeartbeatDeps {
   triggers: CronTrigger[];
   queue: WorkQueue;
   canRunAgent: () => Promise<boolean>;
   recordUsage: (promptCount: number) => Promise<void>;
-  runAgent: (role: string, projectPath: string, task: string, mode: 'standalone' | 'team') => Promise<RunResult>;
+  runPipeline: (project: string, task: string, mode: 'standalone' | 'team', agent?: string) => Promise<PipelineResult>;
   log: (message: string) => void;
 }
 
@@ -23,7 +23,6 @@ interface HeartbeatOptions {
 }
 
 const DEFAULT_PROMPT_ESTIMATE = 10;
-const DEFAULT_TEAM_PROMPT_ESTIMATE = 50;
 
 export class HeartbeatLoop {
   private deps: HeartbeatDeps;
@@ -107,10 +106,9 @@ export class HeartbeatLoop {
     this.deps.log(`[heartbeat] tick #${this.tickCount} — firing ${triggerName} (${agent} on ${project}, mode: ${mode})`);
 
     try {
-      await this.deps.runAgent(agent, project, task, mode);
+      const result = await this.deps.runPipeline(project, task, mode, agent);
       trigger?.markFired();
-      // Team sessions use more prompts than standalone
-      const promptEstimate = mode === 'team' ? DEFAULT_TEAM_PROMPT_ESTIMATE : DEFAULT_PROMPT_ESTIMATE;
+      const promptEstimate = result.stagesRun * DEFAULT_PROMPT_ESTIMATE;
       await this.deps.recordUsage(promptEstimate);
       return { action: 'ran_agent', triggerName, source };
     } catch (err) {

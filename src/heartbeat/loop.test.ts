@@ -29,7 +29,7 @@ function makeDeps(overrides: Partial<HeartbeatDeps> = {}): HeartbeatDeps {
     queue: new WorkQueue(QUEUE_FILE),
     canRunAgent: async () => true,
     recordUsage: async () => {},
-    runAgent: async () => ({ agentName: 'scout', sandboxed: false, mode: 'standalone' as const }),
+    runPipeline: async () => ({ completed: true, stagesRun: 1, retries: 0 }),
     log: () => {},
     ...overrides,
   };
@@ -56,20 +56,20 @@ describe('HeartbeatLoop', () => {
     expect(result.action).toBe('idle');
   });
 
-  test('tick fires a due trigger and runs the agent', async () => {
-    const runAgent = vi.fn(async () => ({ agentName: 'scout', sandboxed: false, mode: 'standalone' as const }));
+  test('tick fires a due trigger and runs the pipeline', async () => {
+    const runPipeline = vi.fn(async () => ({ completed: true, stagesRun: 1, retries: 0 }));
     const trigger = makeTrigger();
 
     // Set time to a minute boundary so the trigger is due
     vi.setSystemTime(new Date('2026-02-27T10:01:00.000'));
 
-    const deps = makeDeps({ triggers: [trigger], runAgent });
+    const deps = makeDeps({ triggers: [trigger], runPipeline });
     const loop = new HeartbeatLoop(deps);
 
     const result = await loop.tick();
     expect(result.action).toBe('ran_agent');
     expect(result.triggerName).toBe('test-trigger');
-    expect(runAgent).toHaveBeenCalledOnce();
+    expect(runPipeline).toHaveBeenCalledOnce();
   });
 
   test('tick queues work when budget is low', async () => {
@@ -90,7 +90,7 @@ describe('HeartbeatLoop', () => {
   });
 
   test('tick processes queued work when budget available', async () => {
-    const runAgent = vi.fn(async () => ({ agentName: 'scout', sandboxed: false, mode: 'standalone' as const }));
+    const runPipeline = vi.fn(async () => ({ completed: true, stagesRun: 1, retries: 0 }));
     const queue = new WorkQueue(QUEUE_FILE);
     await queue.enqueue({
       triggerName: 'queued-trigger',
@@ -101,13 +101,13 @@ describe('HeartbeatLoop', () => {
       enqueuedAt: Date.now(),
     });
 
-    const deps = makeDeps({ queue, runAgent });
+    const deps = makeDeps({ queue, runPipeline });
     const loop = new HeartbeatLoop(deps);
 
     const result = await loop.tick();
     expect(result.action).toBe('ran_agent');
     expect(result.source).toBe('queue');
-    expect(runAgent).toHaveBeenCalledOnce();
+    expect(runPipeline).toHaveBeenCalledOnce();
     expect(await queue.isEmpty()).toBe(true);
   });
 
@@ -117,15 +117,15 @@ describe('HeartbeatLoop', () => {
       resolveAgent = resolve;
     });
 
-    const runAgent = vi.fn(async () => {
+    const runPipeline = vi.fn(async () => {
       await agentPromise;
-      return { agentName: 'scout', sandboxed: false, mode: 'standalone' as const };
+      return { completed: true, stagesRun: 1, retries: 0 };
     });
 
     const trigger = makeTrigger();
     vi.setSystemTime(new Date('2026-02-27T10:01:00.000'));
 
-    const deps = makeDeps({ triggers: [trigger], runAgent });
+    const deps = makeDeps({ triggers: [trigger], runPipeline });
     const loop = new HeartbeatLoop(deps);
 
     // First tick starts agent (don't await)
@@ -153,7 +153,7 @@ describe('HeartbeatLoop', () => {
   });
 
   test('tick handles agent errors gracefully', async () => {
-    const runAgent = vi.fn(async () => {
+    const runPipeline = vi.fn(async () => {
       throw new Error('Agent crashed');
     });
     const logs: string[] = [];
@@ -162,7 +162,7 @@ describe('HeartbeatLoop', () => {
 
     const deps = makeDeps({
       triggers: [trigger],
-      runAgent,
+      runPipeline,
       log: (msg: string) => logs.push(msg),
     });
     const loop = new HeartbeatLoop(deps);
