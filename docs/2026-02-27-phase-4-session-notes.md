@@ -37,7 +37,7 @@ The IPC test suite creates a temp directory per test, spins up a real Unix socke
 ## What Didn't Work
 
 ### `tsc` build output polluted test discovery
-**Problem:** After running `npx tsc` for the first time, `dist/` contained compiled `.test.js` files. Vitest (with no config) discovered both `src/*.test.ts` and `dist/*.test.js`, doubling the test count and causing race conditions on shared temp files. Two tests failed with `Cannot read properties of null` because the `dist/` copies ran against stale queue state from `src/` copies.
+**Problem:** After running `tsc` for the first time, `dist/` contained compiled `.test.js` files. Vitest (with no config) discovered both `src/*.test.ts` and `dist/*.test.js`, doubling the test count and causing race conditions on shared temp files. Two tests failed with `Cannot read properties of null` because the `dist/` copies ran against stale queue state from `src/` copies.
 
 **Resolution:** Created `vitest.config.ts` to restrict test discovery to `src/`:
 ```typescript
@@ -49,7 +49,7 @@ export default defineConfig({
 ```
 Also added `"exclude": ["src/**/*.test.ts", "vitest.config.ts"]` to `tsconfig.json`.
 
-**Impact on future phases:** Always run `npm test` after `npx tsc` to catch this. The vitest config is now permanent, so this shouldn't recur. But if new config files are added at root level, ensure they're excluded from `tsconfig.json`.
+**Impact on future phases:** Always run `bun run test` after `bun run build` to catch this. The vitest config is now permanent, so this shouldn't recur. But if new config files are added at root level, ensure they're excluded from `tsconfig.json`.
 
 ### vitest.config.ts itself got compiled to root
 **Problem:** `tsc` tried to compile `vitest.config.ts` (at project root) and emitted `vitest.config.js`, `.d.ts`, and `.d.ts.map` at root (not in `dist/`, because the file is outside `src/` / `rootDir`). This caused a `TS6059` error about the file not being under `rootDir`.

@@ -8,9 +8,10 @@
 - [ ] Claude Max 20x plan active ($200/month)
 - [ ] Perplexity Pro subscription active ($20/month) + API key
 - [ ] Vercel account with Sandbox access (Hobby: free 5 CPU hrs, Pro: $0.128/hr)
-- [ ] Vercel CLI installed (`npm install -g vercel`) and project linked
+- [ ] Vercel CLI installed (`bun add -g vercel`) and project linked
 - [ ] Claude Code CLI installed and authenticated
 - [ ] Node.js >= 22 installed
+- [ ] Bun >= 1.2 installed (package manager)
 - [ ] Git configured
 
 ---
@@ -25,7 +26,7 @@ Create the TypeScript project that will become the standalone app.
 
 **Do:**
 1. `mkdir ~/Projects/codename-claude && cd ~/Projects/codename-claude`
-2. `npm init -y` — set name to `codename-claude`
+2. `bun init` — set name to `codename-claude`
 3. Install core dependencies:
    - `@anthropic-ai/claude-agent-sdk`
    - `@vercel/sandbox`
@@ -34,7 +35,7 @@ Create the TypeScript project that will become the standalone app.
    - `tsx` (dev)
    - `typescript` (dev)
    - `@types/ms` (dev)
-4. `npx tsc --init` — strict mode, ESM, Node22 target, outDir `dist/`
+4. `bunx tsc --init` — strict mode, ESM, Node22 target, outDir `dist/`
 5. Create the source directory structure:
    ```
    src/
@@ -52,7 +53,7 @@ Create the TypeScript project that will become the standalone app.
 7. Create `.gitignore` (node_modules, dist, .env)
 8. `git init && git add -A && git commit -m "init: codename-claude scaffold"`
 
-**Verify:** `npx tsx src/daemon.ts` runs without crashing (even if it just exits).
+**Verify:** `bun run src/daemon.ts` runs without crashing (even if it just exits).
 
 ### Task 1.2 — Create the ~/.codename-claude/ directory structure
 
@@ -247,7 +248,7 @@ Prove the full chain works without the heartbeat.
 1. Create a test project: `mkdir ~/Projects/cc-test && cd ~/Projects/cc-test && git init`
 2. Copy the .brain/ template: `cp -r ~/.codename-claude/templates/brain/ .brain/`
 3. Edit `.brain/PROJECT.md` with a simple project description
-4. Run the agent runner manually: `npx tsx src/test-run.ts scout cc-test "Do a research scan on CLI frameworks for Node.js"`
+4. Run the agent runner manually: `bun run src/test-run.ts scout cc-test "Do a research scan on CLI frameworks for Node.js"`
 5. Check: `.brain/RESEARCH/` should have a new markdown file with research findings
 6. Check: `.brain/SESSIONS/` should have a session summary
 7. Run Scout AGAIN — verify it reads the previous session summary and doesn't repeat work
@@ -368,7 +369,7 @@ Prove the full chain works without the heartbeat.
 4. Start the heartbeat loop
 5. Log startup: "Codename Claude daemon started. Tracking N projects. M triggers registered. Budget: X/Y prompts remaining."
 
-**Verify:** `npx tsx src/daemon.ts` starts cleanly, logs the startup banner, and ticks quietly.
+**Verify:** `bun run src/daemon.ts` starts cleanly, logs the startup banner, and ticks quietly.
 
 ### Task 2.8 — Configure and test daily Scout
 
@@ -395,7 +396,7 @@ Prove the full chain works without the heartbeat.
 
 ### Phase 2 Done When:
 
-- [x] Daemon starts with `npx tsx src/daemon.ts` and runs the heartbeat loop
+- [x] Daemon starts with `bun run src/daemon.ts` and runs the heartbeat loop
 - [x] Heartbeat ticks every 60s with zero token cost
 - [x] Cron trigger fires on schedule
 - [x] Token budget tracker prevents overspending (queues work when low)
@@ -547,7 +548,7 @@ Add to `codename-claude/package.json`:
 { "bin": { "cc": "./dist/cli.js" } }
 ```
 
-`npm link` to make `cc` available globally.
+`bun link` to make `cc` available globally.
 
 ### Phase 4 Done When:
 

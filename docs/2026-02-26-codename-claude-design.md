@@ -362,8 +362,8 @@ The daemon passes the Perplexity MCP server configuration inline when spawning a
 // Passed inline per session, not installed globally
 mcpServers: {
   perplexity: {
-    command: "npx",
-    args: ["-y", "@perplexity-ai/mcp-server"],
+    command: "bunx",
+    args: ["@perplexity-ai/mcp-server"],
     env: { PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY }
   }
 }
@@ -379,7 +379,7 @@ Code-executing agents (Builder, Reviewer) run inside [Vercel Sandbox](https://ve
 
 | Agent | Sandboxed | Reason |
 |---|---|---|
-| Builder | **Yes** | Writes code, runs `npm install`, executes builds and scripts |
+| Builder | **Yes** | Writes code, runs `bun install`, executes builds and scripts |
 | Reviewer | **Yes** | Runs tests, linters, type checkers — all code execution |
 | Scout | No | Web research via Perplexity MCP, file reads only |
 | Architect | No | Writes specs and plans, no code execution |
