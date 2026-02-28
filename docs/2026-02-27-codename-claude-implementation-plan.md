@@ -551,10 +551,12 @@ Add to `codename-claude/package.json`:
 
 ### Phase 4 Done When:
 
-- [ ] `cc` CLI works for all subcommands
-- [ ] File watcher triggers on .brain/ changes
-- [ ] Memory janitor prunes and archives on schedule
-- [ ] `cc interactive` starts a full Codename Claude session at your keyboard
+- [x] `cc` CLI works for all subcommands
+- [x] File watcher triggers on .brain/ changes
+- [x] Memory janitor prunes and archives on schedule
+- [x] `cc interactive` starts a full Codename Claude session at your keyboard
+
+> **✅ Phase 4 completed 2026-02-27.** Session notes: [2026-02-27-phase-4-session-notes.md](2026-02-27-phase-4-session-notes.md)
 
 ---
 
