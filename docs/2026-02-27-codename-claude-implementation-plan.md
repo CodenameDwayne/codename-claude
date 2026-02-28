@@ -482,12 +482,14 @@ Add webhook config to `config.json`:
 
 ### Phase 3 Done When:
 
-- [ ] Agent Teams spawns via the daemon with SDK
-- [ ] Team Lead orchestrates Scout → Architect → Builder → Reviewer
-- [ ] Review loop scores, trends, and routes correctly
-- [ ] 3-cycle cap and stall detection work
-- [ ] Webhook trigger fires on GitHub events
-- [ ] Full pipeline produces working code from a feature idea
+- [x] Agent Teams spawns via the daemon with SDK
+- [x] Team Lead orchestrates Scout → Architect → Builder → Reviewer
+- [x] Review loop scores, trends, and routes correctly
+- [x] 3-cycle cap and stall detection work
+- [x] Webhook trigger fires on GitHub events
+- [x] Full pipeline produces working code from a feature idea
+
+> **✅ Phase 3 completed 2026-02-27.** Session notes: [2026-02-27-phase-3-session-notes.md](2026-02-27-phase-3-session-notes.md)
 
 ---
 
