@@ -7,7 +7,7 @@ export interface HeartbeatDeps {
   queue: WorkQueue;
   canRunAgent: () => Promise<boolean>;
   recordUsage: (promptCount: number) => Promise<void>;
-  runAgent: (role: string, projectPath: string, task: string) => Promise<RunResult>;
+  runAgent: (role: string, projectPath: string, task: string, mode: 'standalone' | 'team') => Promise<RunResult>;
   log: (message: string) => void;
 }
 
@@ -23,6 +23,7 @@ interface HeartbeatOptions {
 }
 
 const DEFAULT_PROMPT_ESTIMATE = 10;
+const DEFAULT_TEAM_PROMPT_ESTIMATE = 50;
 
 export class HeartbeatLoop {
   private deps: HeartbeatDeps;
@@ -61,7 +62,7 @@ export class HeartbeatLoop {
         const budgetOk = await this.deps.canRunAgent();
 
         if (budgetOk) {
-          return await this.executeAgent(config.agent, config.project, config.task, config.name, 'trigger', trigger);
+          return await this.executeAgent(config.agent, config.project, config.task, config.name, config.mode, 'trigger', trigger);
         } else {
           await this.deps.queue.enqueue({
             triggerName: config.name,
@@ -84,7 +85,7 @@ export class HeartbeatLoop {
       if (budgetOk) {
         const item = await this.deps.queue.dequeue();
         if (item) {
-          return await this.executeAgent(item.agent, item.project, item.task, item.triggerName, 'queue');
+          return await this.executeAgent(item.agent, item.project, item.task, item.triggerName, item.mode, 'queue');
         }
       }
     }
@@ -99,15 +100,18 @@ export class HeartbeatLoop {
     project: string,
     task: string,
     triggerName: string,
+    mode: 'standalone' | 'team',
     source: 'trigger' | 'queue',
     trigger?: CronTrigger,
   ): Promise<TickResult> {
-    this.deps.log(`[heartbeat] tick #${this.tickCount} — firing ${triggerName} (${agent} on ${project})`);
+    this.deps.log(`[heartbeat] tick #${this.tickCount} — firing ${triggerName} (${agent} on ${project}, mode: ${mode})`);
 
     try {
-      await this.deps.runAgent(agent, project, task);
+      await this.deps.runAgent(agent, project, task, mode);
       trigger?.markFired();
-      await this.deps.recordUsage(DEFAULT_PROMPT_ESTIMATE);
+      // Team sessions use more prompts than standalone
+      const promptEstimate = mode === 'team' ? DEFAULT_TEAM_PROMPT_ESTIMATE : DEFAULT_PROMPT_ESTIMATE;
+      await this.deps.recordUsage(promptEstimate);
       return { action: 'ran_agent', triggerName, source };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

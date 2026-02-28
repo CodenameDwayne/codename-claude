@@ -73,12 +73,15 @@ interface AgentDefinition {
 export interface RunResult {
   agentName: string;
   sandboxed: boolean;
+  mode: 'standalone' | 'team';
   syncedFiles?: string[];
 }
 
 export interface RunOptions {
   hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
   log?: (message: string) => void;
+  mode?: 'standalone' | 'team';
+  maxTurns?: number;
 }
 
 // --- File Readers ---
@@ -205,8 +208,32 @@ function mapModel(model: string): 'sonnet' | 'opus' | 'haiku' {
 // --- Runner ---
 
 /**
+ * Read all agent definitions from the agents directory.
+ * Used by team mode to include teammate descriptions in the Team Lead's context.
+ */
+async function readTeammateDefinitions(excludeRole: string): Promise<string> {
+  try {
+    const entries = await readdir(AGENTS_DIR, { withFileTypes: true });
+    const sections: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      const roleName = entry.name.replace('.md', '');
+      if (roleName === excludeRole) continue;
+
+      const content = await readFile(join(AGENTS_DIR, entry.name), 'utf-8');
+      // Include full definition so Team Lead knows each agent's capabilities
+      sections.push(`### Agent: ${roleName}\n\n${content}`);
+    }
+    return sections.join('\n\n---\n\n');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Spawn an agent session. Reads the agent definition, builds the system prompt,
  * and calls the Agent SDK. If the agent is sandboxed, uses the SDK's built-in sandbox.
+ * If mode is 'team', enables Agent Teams and configures the Team Lead with teammate context.
  */
 export async function runAgent(
   role: string,
@@ -215,6 +242,7 @@ export async function runAgent(
   runOptions: RunOptions = {},
 ): Promise<RunResult> {
   const log = runOptions.log ?? console.log;
+  const mode = runOptions.mode ?? 'standalone';
 
   // 1. Read agent definition
   const agentRaw = await readTextFile(join(AGENTS_DIR, `${role}.md`));
@@ -224,20 +252,37 @@ export async function runAgent(
   const agent = parseAgentDefinition(agentRaw);
 
   // 2. Build system prompt
-  const systemPrompt = await buildSystemPrompt(agent, projectPath);
+  let systemPrompt = await buildSystemPrompt(agent, projectPath);
 
-  // 3. Prepare query options
+  // 3. For team mode, append teammate definitions to the system prompt
+  if (mode === 'team') {
+    const teammateContext = await readTeammateDefinitions(role);
+    if (teammateContext) {
+      systemPrompt += `\n\n---\n\n# Available Teammate Definitions\n\n${teammateContext}`;
+    }
+  }
+
+  // 4. Prepare query options
   const model = mapModel(agent.frontmatter.model);
   const sandboxed = agent.frontmatter.sandboxed;
 
-  log(`[runner] Spawning ${agent.frontmatter.name} (${model}, sandboxed: ${sandboxed})`);
+  log(`[runner] Spawning ${agent.frontmatter.name} (${model}, sandboxed: ${sandboxed}, mode: ${mode})`);
   log(`[runner] Task: ${task}`);
 
-  // 4. Prepare environment for SDK child process
-  const env = { ...process.env };
+  // 5. Prepare environment for SDK child process
+  const env: Record<string, string | undefined> = { ...process.env };
   delete env['CLAUDECODE'];
 
-  // 5. Run agent via SDK
+  // Enable Agent Teams when running in team mode
+  if (mode === 'team') {
+    env['CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS'] = '1';
+    log('[runner] Agent Teams enabled via CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1');
+  }
+
+  // 6. Determine maxTurns — team sessions run longer
+  const maxTurns = runOptions.maxTurns ?? (mode === 'team' ? 200 : 50);
+
+  // 7. Run agent via SDK
   const claudePath = findClaudeExecutable();
   log(`[runner] Using claude at: ${claudePath}`);
 
@@ -246,6 +291,7 @@ export async function runAgent(
     options: {
       systemPrompt,
       model,
+      maxTurns,
       pathToClaudeCodeExecutable: claudePath,
       allowedTools: agent.frontmatter.tools,
       cwd: projectPath,
@@ -285,5 +331,6 @@ export async function runAgent(
   return {
     agentName: agent.frontmatter.name,
     sandboxed,
+    mode,
   };
 }

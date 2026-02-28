@@ -29,7 +29,7 @@ function makeDeps(overrides: Partial<HeartbeatDeps> = {}): HeartbeatDeps {
     queue: new WorkQueue(QUEUE_FILE),
     canRunAgent: async () => true,
     recordUsage: async () => {},
-    runAgent: async () => ({ agentName: 'scout', sandboxed: false }),
+    runAgent: async () => ({ agentName: 'scout', sandboxed: false, mode: 'standalone' as const }),
     log: () => {},
     ...overrides,
   };
@@ -57,7 +57,7 @@ describe('HeartbeatLoop', () => {
   });
 
   test('tick fires a due trigger and runs the agent', async () => {
-    const runAgent = vi.fn(async () => ({ agentName: 'scout', sandboxed: false }));
+    const runAgent = vi.fn(async () => ({ agentName: 'scout', sandboxed: false, mode: 'standalone' as const }));
     const trigger = makeTrigger();
 
     // Set time to a minute boundary so the trigger is due
@@ -90,7 +90,7 @@ describe('HeartbeatLoop', () => {
   });
 
   test('tick processes queued work when budget available', async () => {
-    const runAgent = vi.fn(async () => ({ agentName: 'scout', sandboxed: false }));
+    const runAgent = vi.fn(async () => ({ agentName: 'scout', sandboxed: false, mode: 'standalone' as const }));
     const queue = new WorkQueue(QUEUE_FILE);
     await queue.enqueue({
       triggerName: 'queued-trigger',
@@ -119,7 +119,7 @@ describe('HeartbeatLoop', () => {
 
     const runAgent = vi.fn(async () => {
       await agentPromise;
-      return { agentName: 'scout', sandboxed: false };
+      return { agentName: 'scout', sandboxed: false, mode: 'standalone' as const };
     });
 
     const trigger = makeTrigger();
