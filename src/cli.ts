@@ -169,12 +169,34 @@ async function cmdStatus(): Promise<void> {
 }
 
 async function cmdRun(args: string[]): Promise<void> {
-  // codename run scout [project] or codename run team [project] "task"
   const subCmd = args[0];
   if (!subCmd) {
-    die('Usage: codename run <agent|team> [project] ["task"]');
+    die('Usage: codename run <agent|pipeline> <project> ["task"]');
   }
 
+  // Pipeline mode — LLM router picks agents
+  if (subCmd === 'pipeline') {
+    const project = args[1];
+    const task = args[2];
+    if (!project || !task) {
+      die('Usage: codename run pipeline <project> "task description"');
+    }
+    const response = await send({
+      type: 'run',
+      agent: 'pipeline',
+      project,
+      task,
+      mode: 'standalone',
+    });
+    if (response.ok) {
+      console.log(`Queued pipeline for ${project}. The heartbeat will pick it up.`);
+    } else {
+      die(response.error);
+    }
+    return;
+  }
+
+  // Legacy team mode — now runs as pipeline with teams flag
   if (subCmd === 'team') {
     const project = args[1];
     const task = args[2];
@@ -183,21 +205,20 @@ async function cmdRun(args: string[]): Promise<void> {
     }
     const response = await send({
       type: 'run',
-      agent: 'team-lead',
+      agent: 'pipeline',
       project,
       task,
       mode: 'team',
     });
     if (response.ok) {
-      const data = response.data as { agent: string; project: string };
-      console.log(`Queued team pipeline for ${data.project}. The heartbeat will pick it up.`);
+      console.log(`Queued team pipeline for ${project}. The heartbeat will pick it up.`);
     } else {
       die(response.error);
     }
     return;
   }
 
-  // Standalone agent run
+  // Single agent run — bypasses router
   const agent = subCmd;
   const project = args[1];
   const task = args[2] ?? `Run ${agent} agent session`;
@@ -378,8 +399,9 @@ Commands:
   start                        Start the daemon
   stop                         Stop the daemon
   status                       Show daemon status
-  run <agent> <project> [task] Run an agent on a project
-  run team <project> "task"    Run a full team pipeline
+  run <agent> <project> [task] Run a single agent on a project
+  run pipeline <project> "task" Run a full pipeline (LLM router picks agents)
+  run team <project> "task"    Run a pipeline with teams enabled
   projects list                List registered projects
   projects add <path> [name]   Register a new project
   projects remove <path|name>  Unregister a project
