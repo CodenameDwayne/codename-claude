@@ -107,10 +107,15 @@ async function main(): Promise<void> {
   const triggers = buildTriggers(config);
   const queue = new WorkQueue(QUEUE_FILE);
 
-  // Build project name → path lookup from config
+  // Build project name → path lookup from config AND persisted registry
   // Trigger configs reference projects by name, but runAgent needs the full path
   const projectPathsByName = new Map<string, string>();
   for (const p of config.projects) {
+    projectPathsByName.set(p.name, p.path);
+  }
+  // Also load registered projects (added via `projects add`) from persisted state
+  const registeredProjects = await listProjects(PROJECTS_FILE);
+  for (const p of registeredProjects) {
     projectPathsByName.set(p.name, p.path);
   }
 

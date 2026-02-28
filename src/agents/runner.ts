@@ -11,7 +11,7 @@ import { parse as parseYaml } from 'yaml';
 // background process where `node` isn't resolvable. We prioritize the native
 // Mach-O binary over any JS shim by checking known install locations first.
 let _claudePath: string | undefined;
-function findClaudeExecutable(): string {
+export function findClaudeExecutable(): string {
   if (_claudePath) return _claudePath;
 
   const home = process.env['HOME'] ?? '~';

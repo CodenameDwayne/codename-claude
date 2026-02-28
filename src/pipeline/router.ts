@@ -1,7 +1,8 @@
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import Anthropic from '@anthropic-ai/sdk';
+import { findClaudeExecutable } from '../agents/runner.js';
 
 export interface AgentSummary {
   name: string;
@@ -75,7 +76,7 @@ Return ONLY the JSON array, no explanation.`;
 
   const text = response.content.find(b => b.type === 'text')?.text ?? '[]';
   // Extract JSON from response (handle markdown code blocks)
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  const jsonMatch = text.match(/\[[\s\S]*?\]/);
   if (!jsonMatch) {
     throw new Error(`Router returned invalid response: ${text}`);
   }
@@ -94,19 +95,42 @@ Return ONLY the JSON array, no explanation.`;
 }
 
 function createDefaultClient(): CreateMessageFn {
-  const client = new Anthropic();
   return async (params) => {
-    const response = await client.messages.create({
-      model: params.model,
-      max_tokens: params.max_tokens,
-      messages: params.messages as Anthropic.MessageParam[],
-    });
-    return {
-      content: response.content.map(block => ({
-        type: block.type,
-        text: block.type === 'text' ? block.text : undefined,
-      })),
-    };
+    const claudePath = findClaudeExecutable();
+    const prompt = params.messages.map(m => m.content).join('\n');
+    let text = '';
+
+    // Strip CLAUDECODE env var to avoid "nested session" rejection
+    const env: Record<string, string | undefined> = { ...process.env };
+    delete env['CLAUDECODE'];
+
+    for await (const message of query({
+      prompt,
+      options: {
+        model: 'haiku',
+        maxTurns: 1,
+        allowedTools: [],
+        pathToClaudeCodeExecutable: claudePath,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        env,
+      },
+    })) {
+      const msg = message as Record<string, unknown>;
+      if (msg['type'] === 'assistant' && msg['message']) {
+        const assistantMsg = msg['message'] as Record<string, unknown>;
+        const content = assistantMsg['content'];
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block && typeof block === 'object' && 'type' in block && block.type === 'text' && 'text' in block) {
+              text += String(block.text);
+            }
+          }
+        }
+      }
+    }
+
+    return { content: [{ type: 'text', text }] };
   };
 }
 
