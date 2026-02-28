@@ -208,32 +208,9 @@ function mapModel(model: string): 'sonnet' | 'opus' | 'haiku' {
 // --- Runner ---
 
 /**
- * Read all agent definitions from the agents directory.
- * Used by team mode to include teammate descriptions in the Team Lead's context.
- */
-async function readTeammateDefinitions(excludeRole: string): Promise<string> {
-  try {
-    const entries = await readdir(AGENTS_DIR, { withFileTypes: true });
-    const sections: string[] = [];
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-      const roleName = entry.name.replace('.md', '');
-      if (roleName === excludeRole) continue;
-
-      const content = await readFile(join(AGENTS_DIR, entry.name), 'utf-8');
-      // Include full definition so Team Lead knows each agent's capabilities
-      sections.push(`### Agent: ${roleName}\n\n${content}`);
-    }
-    return sections.join('\n\n---\n\n');
-  } catch {
-    return '';
-  }
-}
-
-/**
  * Spawn an agent session. Reads the agent definition, builds the system prompt,
  * and calls the Agent SDK. If the agent is sandboxed, uses the SDK's built-in sandbox.
- * If mode is 'team', enables Agent Teams and configures the Team Lead with teammate context.
+ * If mode is 'team', enables Agent Teams for parallel sub-agent work.
  */
 export async function runAgent(
   role: string,
@@ -252,17 +229,9 @@ export async function runAgent(
   const agent = parseAgentDefinition(agentRaw);
 
   // 2. Build system prompt
-  let systemPrompt = await buildSystemPrompt(agent, projectPath);
+  const systemPrompt = await buildSystemPrompt(agent, projectPath);
 
-  // 3. For team mode, append teammate definitions to the system prompt
-  if (mode === 'team') {
-    const teammateContext = await readTeammateDefinitions(role);
-    if (teammateContext) {
-      systemPrompt += `\n\n---\n\n# Available Teammate Definitions\n\n${teammateContext}`;
-    }
-  }
-
-  // 4. Prepare query options
+  // 3. Prepare query options
   const model = mapModel(agent.frontmatter.model);
   const sandboxed = agent.frontmatter.sandboxed;
 
