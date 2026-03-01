@@ -1270,3 +1270,43 @@ describe('PipelineEngine builder/architect retry prompts', () => {
     expect(secondArchitectCall!.task).toContain('REDESIGN');
   });
 });
+
+describe('PipelineEngine scout branch in buildStageTask', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('scout stage gets research-specific prompt', async () => {
+    const taskArgs: { role: string; task: string }[] = [];
+    const runner: PipelineRunnerFn = vi.fn(async (role: string, _project: string, task: string) => {
+      taskArgs.push({ role, task });
+      if (role === 'scout') {
+        // Create RESEARCH dir so validateScout passes
+        await mkdir(join(BRAIN_DIR, 'RESEARCH'), { recursive: true });
+        await writeFile(join(BRAIN_DIR, 'RESEARCH', 'findings.md'), '# Research\nFindings here');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await engine.run({
+      stages: [
+        { agent: 'scout', teams: false },
+        { agent: 'architect', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build a web scraper',
+    });
+
+    const scoutCall = taskArgs.find(t => t.role === 'scout');
+    expect(scoutCall).toBeDefined();
+    expect(scoutCall!.task).toContain('research');
+    expect(scoutCall!.task).toContain('RESEARCH');
+    expect(scoutCall!.task).toContain('build a web scraper');
+  });
+});

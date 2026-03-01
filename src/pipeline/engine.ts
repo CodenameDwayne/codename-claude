@@ -465,6 +465,11 @@ export class PipelineEngine {
   }
 
   private buildStageTask(agent: string, originalTask: string, index: number, stages: PipelineStage[], retries: number = 0): string {
+    // Scout always gets research-specific framing, even at index 0
+    if (agent === 'scout' || agent.includes('scout')) {
+      return `Research the following task thoroughly. Follow the research-scan skill. Write your findings to .brain/RESEARCH/ directory — create one markdown file per research topic. Include technology evaluations, API comparisons, best practices, and any other findings relevant to planning. Do NOT write code or make architectural decisions — you ONLY research and document findings. The Architect agent will use your research to create the implementation plan.\n\nTask: ${originalTask}`;
+    }
+
     if (index === 0 && retries === 0) {
       return originalTask;
     }
