@@ -1,25 +1,28 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 
-export interface StageState {
-  agent: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  startedAt?: number;
+export interface TaskProgress {
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  attempts: number;
+  lastVerdict?: string;
+  lastSessionId?: string;
   completedAt?: number;
-  sessionId?: string;
-  validation?: 'passed' | string;
-  batchScope?: string;
 }
 
 export interface PipelineState {
   project: string;
   task: string;
-  pipeline: string[];
+  /** Agents that ran before the Ralph loop (e.g. ['scout', 'architect']). */
+  agentPipeline: string[];
   status: 'running' | 'completed' | 'failed' | 'stalled';
-  currentStage: number;
+  /** Current phase: 'scouting' | 'planning' | 'building' | 'completed' | 'failed'. */
+  phase: string;
   startedAt: number;
   updatedAt: number;
-  stages: StageState[];
+  tasks: TaskProgress[];
+  currentTaskIndex: number;
+  totalIterations: number;
   retries: number;
   finalVerdict?: string;
   error?: string;
