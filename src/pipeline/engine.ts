@@ -308,29 +308,30 @@ export class PipelineEngine {
   }
 
   private async validateArchitect(project: string): Promise<string | null> {
+    const planPath = join(project, '.brain', 'PLAN.md');
+    let content: string;
     try {
-      const planPath = join(project, '.brain', 'PLAN.md');
-      const content = await readFile(planPath, 'utf-8');
-      if (!content.trim()) return 'Architect did not write .brain/PLAN.md';
+      content = await readFile(planPath, 'utf-8');
+    } catch {
+      return 'Architect did not produce .brain/PLAN.md';
+    }
+    if (!content.trim()) return 'Architect wrote empty .brain/PLAN.md';
 
-      // Validate task headings exist and are sequential
-      const taskRegex = /^###\s+Task\s+(\d+):/gm;
-      const taskNumbers: number[] = [];
-      let match: RegExpExecArray | null;
-      while ((match = taskRegex.exec(content)) !== null) {
-        taskNumbers.push(parseInt(match[1]!, 10));
-      }
+    // Validate task headings exist and are sequential
+    const taskRegex = /^###\s+Task\s+(\d+):/gm;
+    const taskNumbers: number[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = taskRegex.exec(content)) !== null) {
+      taskNumbers.push(parseInt(match[1]!, 10));
+    }
 
-      if (taskNumbers.length > 0) {
-        // Check sequential numbering starting from 1
-        for (let i = 0; i < taskNumbers.length; i++) {
-          if (taskNumbers[i] !== i + 1) {
-            return `PLAN.md has non-sequential task numbering: expected Task ${i + 1}, found Task ${taskNumbers[i]}`;
-          }
+    if (taskNumbers.length > 0) {
+      // Check sequential numbering starting from 1
+      for (let i = 0; i < taskNumbers.length; i++) {
+        if (taskNumbers[i] !== i + 1) {
+          return `PLAN.md has non-sequential task numbering: expected Task ${i + 1}, found Task ${taskNumbers[i]}`;
         }
       }
-    } catch {
-      // PLAN.md not required for all architect runs — skip validation if missing
     }
 
     return null;
@@ -409,7 +410,7 @@ export class PipelineEngine {
     if (agent === 'architect' || agent.includes('architect')) {
       const isTeamMode = stages[index]?.teams ?? false;
       const teamInstruction = isTeamMode
-        ? `\n\nIMPORTANT — TEAM MODE: You are running with Claude Agent Teams enabled. You MUST use the TeamCreate tool to create a planning team, then spawn teammates via the Task tool (with name and team_name parameters) to write plan sections in parallel. Follow the plan-feature-team skill. Do NOT write the entire plan yourself — delegate planning domains to teammates to avoid hitting output token limits.`
+        ? `\n\nCRITICAL — TEAM MODE IS MANDATORY: You are running with Claude Agent Teams enabled. This is NON-NEGOTIABLE — you MUST use the TeamCreate tool to create a planning team, then spawn teammates via the Task tool (with name and team_name parameters) to write plan sections in parallel. Follow the plan-feature-team skill EXACTLY. Do NOT write the plan yourself. Do NOT skip team creation regardless of plan size. The user explicitly requested team mode — if you write PLAN.md directly without creating a team first, you are violating a hard requirement. Your first tool call after reading context and writing DECISIONS.md MUST be TeamCreate.`
         : '';
       return `Design the architecture and create a detailed implementation plan for the following task. Start by reading .brain/RESEARCH/ if it exists — this contains research from the Scout agent. Then follow the plan-feature skill. Write the plan to .brain/PLAN.md and any architectural decisions to .brain/DECISIONS.md. Do NOT write any source code, config files, or install dependencies — you ONLY write to .brain/ files. The Builder agent will handle all implementation.${teamInstruction}\n\nTask: ${originalTask}`;
     }

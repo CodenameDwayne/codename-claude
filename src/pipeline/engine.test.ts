@@ -126,6 +126,9 @@ describe('PipelineEngine review loop', () => {
   test('re-runs from architect when reviewer says REDESIGN', async () => {
     let reviewCount = 0;
     const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), '# Plan\n\n### Task 1: Do something\nDetails...\n');
+      }
       if (role === 'reviewer') {
         reviewCount++;
         const verdict = reviewCount === 1 ? 'REDESIGN' : 'APPROVE';
@@ -562,6 +565,38 @@ Details...
   });
 });
 
+describe('PipelineEngine validateArchitect fail-closed', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('fails validation when architect does not produce PLAN.md', async () => {
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      // Architect runs but does NOT write PLAN.md
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(false);
+    expect(result.finalVerdict).toContain('VALIDATION_FAILED');
+    expect(result.finalVerdict).toContain('PLAN.md');
+  });
+});
+
 describe('PipelineEngine team architect validation', () => {
   beforeEach(async () => {
     await mkdir(BRAIN_DIR, { recursive: true });
@@ -750,7 +785,15 @@ Details...
   });
 
   test('teamStagesRun tracks team mode stages separately', async () => {
-    const runner = makeRunner();
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), '# Plan\n\n### Task 1: Do something\nDetails...\n');
+      }
+      if (role === 'reviewer') {
+        await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
     const engine = new PipelineEngine({ runner, log: () => {} });
 
     const result = await engine.run({
