@@ -275,6 +275,47 @@ describe('PipelineEngine review loop', () => {
   });
 });
 
+describe('PipelineEngine patterns compliance', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('logs warning when reviewer reports patterns non-compliance', async () => {
+    const logs: string[] = [];
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      return {
+        agentName: role,
+        sandboxed: false,
+        mode: 'standalone' as const,
+        structuredOutput: role === 'reviewer' ? {
+          verdict: 'APPROVE',
+          score: 7,
+          summary: 'Works but breaks patterns',
+          issues: [{ severity: 'minor', description: 'Violates naming convention in PATTERNS.md' }],
+          patternsCompliance: false,
+        } : undefined,
+      };
+    });
+
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    await engine.run({
+      stages: [
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(logs.some(l => l.includes('patterns') && l.includes('non-compliance'))).toBe(true);
+  });
+});
+
 describe('PipelineEngine PROJECT.md bootstrap', () => {
   beforeEach(async () => {
     await mkdir(BRAIN_DIR, { recursive: true });

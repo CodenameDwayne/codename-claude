@@ -183,8 +183,20 @@ async function buildSystemPrompt(
 
   const brainSections: string[] = [];
   for (const file of brainFiles) {
-    const content = await readTextFile(join(brainDir, file));
+    let content = await readTextFile(join(brainDir, file));
     if (content && content.trim()) {
+      // Cap MISTAKES.md to prevent unbounded token growth — keep NEWEST entries
+      if (file === 'MISTAKES.md' && content.length > 3000) {
+        const lines = content.split('\n');
+        const truncated: string[] = [];
+        let charCount = 0;
+        for (let j = lines.length - 1; j >= 0; j--) {
+          charCount += lines[j]!.length + 1;
+          if (charCount > 3000) break;
+          truncated.unshift(lines[j]!);
+        }
+        content = '[...oldest entries truncated]\n\n' + truncated.join('\n');
+      }
       brainSections.push(`### ${file}\n\n${content}`);
     }
   }
