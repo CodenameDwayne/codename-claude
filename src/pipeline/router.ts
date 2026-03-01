@@ -62,7 +62,10 @@ Return a JSON array of pipeline stages. Each stage has:
 
 Common patterns:
 - Simple coding task (spec already exists): [{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
-- Complex feature (needs planning): [{"agent":"architect","teams":false},{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
+- Feature needing planning (1-4 components): [{"agent":"architect","teams":false},{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
+- Very complex feature (5+ components, multi-domain architecture): [{"agent":"architect","teams":true},{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
+
+Use teams:true for architect when the task describes 5+ distinct components or domains that could be planned in parallel (e.g., "build a web app with auth, dashboard, API, database, and notifications"). Use teams:false for simpler features with 1-4 components. Only the architect stage should ever have teams:true — builder and reviewer always run standalone.
 
 Do NOT include scout as a pipeline stage. If research is needed, Architect will request it during planning.
 

@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { writeFile, readFile, mkdir, rm } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PipelineEngine, type PipelineRunnerFn } from './engine.js';
 import { readPipelineState } from './state.js';
@@ -559,5 +559,230 @@ Details...
     expect(builderStages).toHaveLength(2);
     expect(builderStages[0]!.batchScope).toBe('Tasks 1-3');
     expect(builderStages[1]!.batchScope).toBe('Task 4');
+  });
+});
+
+describe('PipelineEngine team architect validation', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('validation catches non-sequential task numbering in PLAN.md', async () => {
+    const badPlan = `# Plan
+
+### Task 1: First
+Details...
+
+### Task 3: Third (skipped 2!)
+Details...
+
+### Task 4: Fourth
+Details...
+`;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), badPlan);
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(false);
+    expect(result.finalVerdict).toContain('non-sequential');
+    expect(result.finalVerdict).toContain('expected Task 2');
+  });
+
+  test('validation catches leftover PLAN-PART files', async () => {
+    const validPlan = `# Plan
+
+### Task 1: First
+Details...
+
+### Task 2: Second
+Details...
+`;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), validPlan);
+        // Simulate leftover PLAN-PART files from failed team merge
+        await writeFile(join(BRAIN_DIR, 'PLAN-PART-1.md'), '### Task 1: Leftover');
+        await writeFile(join(BRAIN_DIR, 'PLAN-PART-2.md'), '### Task 2: Leftover');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    // Cleanup runs BEFORE validation, so PLAN-PART files should be cleaned up
+    // and validation should pass
+    expect(result.completed).toBe(true);
+    expect(logs.some(l => l.includes('Cleaned up 2 leftover PLAN-PART files'))).toBe(true);
+  });
+
+  test('partial file cleanup removes PLAN-PART files after architect completes', async () => {
+    const validPlan = `# Plan
+
+### Task 1: First
+Details...
+
+### Task 2: Second
+Details...
+`;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), validPlan);
+        await writeFile(join(BRAIN_DIR, 'PLAN-PART-1.md'), '### Task 1: Part one');
+        await writeFile(join(BRAIN_DIR, 'PLAN-PART-2.md'), '### Task 2: Part two');
+        await writeFile(join(BRAIN_DIR, 'PLAN-PART-3.md'), '### Task 3: Part three');
+      }
+      if (role === 'reviewer') {
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: 'APPROVE',
+            score: 9,
+            summary: 'Good',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    // Verify PLAN-PART files were cleaned up
+    const entries = await readdir(BRAIN_DIR);
+    const partFiles = entries.filter(e => e.startsWith('PLAN-PART-'));
+    expect(partFiles).toHaveLength(0);
+    expect(logs.some(l => l.includes('Cleaned up 3 leftover PLAN-PART files'))).toBe(true);
+  });
+
+  test('validation passes for correctly numbered sequential tasks', async () => {
+    const goodPlan = `# Plan
+
+### Task 1: First
+Details...
+
+### Task 2: Second
+Details...
+
+### Task 3: Third
+Details...
+`;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), goodPlan);
+      }
+      if (role === 'reviewer') {
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: 'APPROVE',
+            score: 9,
+            summary: 'Good',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(true);
+  });
+
+  test('teamStagesRun tracks team mode stages separately', async () => {
+    const runner = makeRunner();
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: true },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(true);
+    expect(result.stagesRun).toBe(3);
+    expect(result.teamStagesRun).toBe(1);
+  });
+
+  test('teamStagesRun is zero when no team stages exist', async () => {
+    const runner = makeRunner();
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(true);
+    expect(result.stagesRun).toBe(2);
+    expect(result.teamStagesRun).toBe(0);
   });
 });

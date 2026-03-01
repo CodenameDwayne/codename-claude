@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PipelineStage } from './router.js';
 import { writePipelineState, type PipelineState, type ReviewOutput } from './state.js';
@@ -41,6 +41,7 @@ export interface PipelineRunOptions {
 export interface PipelineResult {
   completed: boolean;
   stagesRun: number;
+  teamStagesRun: number;
   retries: number;
   finalVerdict?: string;
   sessionIds?: Record<string, string>;
@@ -87,6 +88,7 @@ export class PipelineEngine {
     let lastReviewOutput: ReviewOutput | undefined;
     let i = 0;
     let stagesRun = 0;
+    let teamStagesRun = 0;
 
     while (i < stages.length) {
       const stage = stages[i]!;
@@ -110,6 +112,9 @@ export class PipelineEngine {
       });
 
       stagesRun++;
+      if (stage.teams) {
+        teamStagesRun++;
+      }
 
       // Capture session ID
       if (result.sessionId) {
@@ -118,6 +123,11 @@ export class PipelineEngine {
       }
 
       this.config.log(`[pipeline] Stage ${i + 1}/${stages.length}: ${stage.agent} completed`);
+
+      // Pre-validation cleanup for architect: remove leftover PLAN-PART files before validating
+      if (stage.agent === 'architect' || stage.agent.includes('architect')) {
+        await this.cleanupPlanPartFiles(project);
+      }
 
       // Post-stage validation
       const validationError = await this.validateStage(stage.agent, project, result.structuredOutput);
@@ -130,7 +140,7 @@ export class PipelineEngine {
         pipelineState.error = validationError;
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
-        return { completed: false, stagesRun, retries, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds, review: lastReviewOutput };
+        return { completed: false, stagesRun, teamStagesRun, retries, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds, review: lastReviewOutput };
       }
 
       pipelineState.stages[i]!.status = 'completed';
@@ -168,6 +178,7 @@ export class PipelineEngine {
           // No PLAN.md or read error — continue without orchestration
           this.config.log(`[pipeline] Orchestrator: no PLAN.md found, skipping batch expansion`);
         }
+
       }
 
       // Check review verdict after reviewer stages
@@ -203,7 +214,7 @@ export class PipelineEngine {
           pipelineState.retries = retries;
           pipelineState.updatedAt = Date.now();
           await writePipelineState(project, pipelineState);
-          return { completed: false, stagesRun, retries, finalVerdict: verdict, sessionIds, review: lastReviewOutput };
+          return { completed: false, stagesRun, teamStagesRun, retries, finalVerdict: verdict, sessionIds, review: lastReviewOutput };
         }
 
         retries++;
@@ -252,7 +263,7 @@ export class PipelineEngine {
     pipelineState.updatedAt = Date.now();
     await writePipelineState(project, pipelineState);
 
-    return { completed: true, stagesRun, retries, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
+    return { completed: true, stagesRun, teamStagesRun, retries, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
   }
 
   private async ensureProjectContext(project: string, task: string): Promise<void> {
@@ -301,9 +312,27 @@ export class PipelineEngine {
       const planPath = join(project, '.brain', 'PLAN.md');
       const content = await readFile(planPath, 'utf-8');
       if (!content.trim()) return 'Architect did not write .brain/PLAN.md';
+
+      // Validate task headings exist and are sequential
+      const taskRegex = /^###\s+Task\s+(\d+):/gm;
+      const taskNumbers: number[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = taskRegex.exec(content)) !== null) {
+        taskNumbers.push(parseInt(match[1]!, 10));
+      }
+
+      if (taskNumbers.length > 0) {
+        // Check sequential numbering starting from 1
+        for (let i = 0; i < taskNumbers.length; i++) {
+          if (taskNumbers[i] !== i + 1) {
+            return `PLAN.md has non-sequential task numbering: expected Task ${i + 1}, found Task ${taskNumbers[i]}`;
+          }
+        }
+      }
     } catch {
       // PLAN.md not required for all architect runs — skip validation if missing
     }
+
     return null;
   }
 
@@ -336,6 +365,22 @@ export class PipelineEngine {
       return 'Reviewer did not produce a review (no structured output and no .brain/REVIEW.md)';
     }
     return null;
+  }
+
+  private async cleanupPlanPartFiles(project: string): Promise<void> {
+    try {
+      const brainDir = join(project, '.brain');
+      const entries = await readdir(brainDir);
+      const partFiles = entries.filter(e => /^PLAN-PART-\d+\.md$/.test(e));
+      for (const partFile of partFiles) {
+        await unlink(join(brainDir, partFile));
+      }
+      if (partFiles.length > 0) {
+        this.config.log(`[pipeline] Cleaned up ${partFiles.length} leftover PLAN-PART files`);
+      }
+    } catch {
+      // .brain dir might not exist — that's fine
+    }
   }
 
   private buildStageTask(agent: string, originalTask: string, index: number, stages: PipelineStage[]): string {
