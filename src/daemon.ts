@@ -79,10 +79,14 @@ export async function loadConfig(configPath: string = CONFIG_FILE): Promise<Daem
   }
 }
 
-export function buildTriggers(config: DaemonConfig): CronTrigger[] {
+export function buildTriggers(config: DaemonConfig, stateDir?: string): CronTrigger[] {
   return config.triggers
     .filter((t) => t.type === 'cron')
-    .map((t) => new CronTrigger(t));
+    .map((t) => {
+      const trigger = new CronTrigger(t, stateDir ? { stateDir } : undefined);
+      trigger.loadState();
+      return trigger;
+    });
 }
 
 // --- Logging ---
@@ -104,7 +108,7 @@ async function main(): Promise<void> {
     stateFile: BUDGET_FILE,
   };
 
-  const triggers = buildTriggers(config);
+  const triggers = buildTriggers(config, STATE_DIR);
   const queue = new WorkQueue(QUEUE_FILE);
 
   // Build project name → path lookup from config AND persisted registry
@@ -172,6 +176,16 @@ async function main(): Promise<void> {
     const agents = await loadAgentSummaries(AGENTS_DIR);
     const projectContext = await readTextFileSafe(join(resolvedProject, '.brain', 'PROJECT.md'));
     const stages = await routeTask({ task, agents, projectContext });
+
+    // When user explicitly requests team mode, force teams on the architect stage
+    if (mode === 'team') {
+      for (const stage of stages) {
+        if (stage.agent === 'architect') {
+          stage.teams = true;
+        }
+      }
+    }
+
     log(`[pipeline] Router selected: ${stages.map(s => s.agent).join(' → ')}`);
     return pipelineEngine.run({ stages, project: resolvedProject, task });
   }
@@ -348,9 +362,20 @@ async function main(): Promise<void> {
   await writeFile(PID_FILE_DEFAULT, String(process.pid));
   log(`  PID:       ${process.pid} (${PID_FILE_DEFAULT})`);
 
+  // Abort controller for signaling in-flight agents to stop
+  const shutdownController = new AbortController();
+
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     log(`Received ${signal} — shutting down...`);
+
+    // Signal in-flight agents to stop
+    shutdownController.abort();
+
+    // Give in-flight work 10 seconds to complete
+    const gracePeriod = new Promise(resolve => setTimeout(resolve, 10_000));
+    await Promise.race([gracePeriod]);
+
     heartbeat.stop();
     await fileWatcher.stop();
     await ipcServer.stop();
