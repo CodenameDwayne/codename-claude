@@ -1416,3 +1416,114 @@ describe('PipelineEngine per-batch retry counters', () => {
     expect(logs.some(l => l.includes('Max retries') && l.includes('Tasks 1-3'))).toBe(true);
   });
 });
+
+describe('PipelineEngine state rebuild after REDESIGN', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('rebuilds pipeline state correctly after REDESIGN re-expansion', async () => {
+    // After REDESIGN, architect re-runs and produces a different task count.
+    // First run: architect produces 2 tasks => 1 batch (Tasks 1-2)
+    // After REDESIGN: architect produces 4 tasks => 2 batches (Tasks 1-3, Task 4)
+    // Verify pipeline state stages array is rebuilt to match the new stages.
+
+    let architectCallCount = 0;
+    let reviewerCallCount = 0;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        architectCallCount++;
+        if (architectCallCount === 1) {
+          // First architecture: 2 tasks
+          await writeFile(join(BRAIN_DIR, 'PLAN.md'), `# Plan
+### Task 1: Setup
+### Task 2: Build
+`);
+        } else {
+          // Redesigned architecture: 4 tasks
+          await writeFile(join(BRAIN_DIR, 'PLAN.md'), `# Plan
+### Task 1: Setup
+### Task 2: Core
+### Task 3: API
+### Task 4: Tests
+`);
+        }
+      }
+      if (role === 'reviewer') {
+        reviewerCallCount++;
+        if (reviewerCallCount === 1) {
+          // First review: REDESIGN
+          return {
+            agentName: role,
+            sandboxed: false,
+            mode: 'standalone' as const,
+            structuredOutput: {
+              verdict: 'REDESIGN',
+              score: 3,
+              summary: 'Architecture needs rethinking',
+              issues: [{ severity: 'critical' as const, description: 'Too few tasks' }],
+              patternsCompliance: false,
+            },
+          };
+        }
+        // Subsequent reviews: APPROVE
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: 'APPROVE',
+            score: 9,
+            summary: 'Good',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build app',
+    });
+
+    expect(result.completed).toBe(true);
+
+    // Verify final pipeline state reflects the redesigned architecture
+    const state = await readPipelineState(TEST_PROJECT);
+    expect(state).not.toBeNull();
+    expect(state!.status).toBe('completed');
+
+    // After redesign with 4 tasks: architect + builder(1-3) + reviewer(1-3) + builder(4) + reviewer(4) = 5 stages
+    expect(state!.stages).toHaveLength(5);
+    expect(state!.stages[0]!.agent).toBe('architect');
+    expect(state!.stages[0]!.status).toBe('completed');
+
+    // Verify batch scopes in state match the new expansion
+    const builderStages = state!.stages.filter(s => s.agent === 'builder');
+    expect(builderStages).toHaveLength(2);
+    expect(builderStages[0]!.batchScope).toBe('Tasks 1-3');
+    expect(builderStages[1]!.batchScope).toBe('Task 4');
+
+    // All stages should be completed
+    expect(state!.stages.every(s => s.status === 'completed')).toBe(true);
+
+    // Verify the pipeline went through REDESIGN
+    expect(logs.some(l => l.includes('REDESIGN'))).toBe(true);
+    expect(architectCallCount).toBe(2);
+  });
+});
