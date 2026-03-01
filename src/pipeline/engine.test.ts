@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { writeFile, mkdir, rm } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PipelineEngine, type PipelineRunnerFn } from './engine.js';
 import { readPipelineState } from './state.js';
@@ -272,5 +272,47 @@ describe('PipelineEngine review loop', () => {
     expect(runner).toHaveBeenCalledTimes(4);
     expect(result.retries).toBe(1);
     expect(result.completed).toBe(true);
+  });
+});
+
+describe('PipelineEngine PROJECT.md bootstrap', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('bootstraps PROJECT.md from task when it does not exist', async () => {
+    const runner = makeRunner();
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await engine.run({
+      stages: [{ agent: 'builder', teams: false }],
+      project: TEST_PROJECT,
+      task: 'Build a todo app with Next.js, TypeScript, and Tailwind CSS',
+    });
+
+    const content = await readFile(join(BRAIN_DIR, 'PROJECT.md'), 'utf-8');
+    expect(content).toContain('todo app');
+    expect(content).toContain('Next.js');
+  });
+
+  test('does not overwrite existing PROJECT.md', async () => {
+    await writeFile(join(BRAIN_DIR, 'PROJECT.md'), '# My Custom Project\n\nExisting context here with enough content to exceed the threshold.');
+
+    const runner = makeRunner();
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await engine.run({
+      stages: [{ agent: 'builder', teams: false }],
+      project: TEST_PROJECT,
+      task: 'Add authentication',
+    });
+
+    const content = await readFile(join(BRAIN_DIR, 'PROJECT.md'), 'utf-8');
+    expect(content).toContain('My Custom Project');
+    expect(content).not.toContain('Add authentication');
   });
 });

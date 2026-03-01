@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PipelineStage } from './router.js';
 import { writePipelineState, type PipelineState, type ReviewOutput } from './state.js';
@@ -57,6 +57,10 @@ export class PipelineEngine {
 
   async run(options: PipelineRunOptions): Promise<PipelineResult> {
     const { stages, project, task } = options;
+
+    // Ensure .brain/PROJECT.md exists for first-run bootstrap
+    await this.ensureProjectContext(project, task);
+
     let retries = 0;
 
     this.config.log(`[pipeline] Starting pipeline: ${stages.map(s => s.agent).join(' → ')}`);
@@ -218,6 +222,22 @@ export class PipelineEngine {
     await writePipelineState(project, pipelineState);
 
     return { completed: true, stagesRun, retries, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
+  }
+
+  private async ensureProjectContext(project: string, task: string): Promise<void> {
+    const projectMdPath = join(project, '.brain', 'PROJECT.md');
+    try {
+      const content = await readFile(projectMdPath, 'utf-8');
+      if (content.trim().length > 50) return; // Already has meaningful content
+    } catch {
+      // File doesn't exist — that's fine, we'll create it
+    }
+
+    // Bootstrap from task description
+    const scaffold = `# Project\n\n**Task:** ${task}\n\n**Status:** First pipeline run — architecture pending.\n`;
+    await mkdir(join(project, '.brain'), { recursive: true });
+    await writeFile(projectMdPath, scaffold);
+    this.config.log(`[pipeline] Bootstrapped .brain/PROJECT.md from task description`);
   }
 
   private async parseReviewVerdict(project: string): Promise<string> {
