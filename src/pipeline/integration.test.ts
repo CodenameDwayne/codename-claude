@@ -19,25 +19,24 @@ describe('Pipeline integration', () => {
   });
 
   test('router + engine: full pipeline with APPROVE', async () => {
-    // Mock router to return builder → reviewer
-    const mockCreate = vi.fn().mockResolvedValue({
-      content: [{ type: 'text', text: '[{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]' }],
-    });
-
     const agents: AgentSummary[] = [
+      { name: 'architect', description: 'designs systems', model: 'sonnet', skills: [] },
       { name: 'builder', description: 'writes code', model: 'sonnet', skills: [] },
       { name: 'reviewer', description: 'reviews code', model: 'sonnet', skills: [] },
     ];
 
+    // "build a login page" routes to architect → builder → reviewer
     const stages = await routeTask({
       task: 'build a login page',
       agents,
       projectContext: 'A web app',
-      createMessage: mockCreate,
     });
 
-    // Mock runner — reviewer writes APPROVE
+    // Mock runner — architect writes PLAN.md, reviewer writes APPROVE
     const runner: PipelineRunnerFn = vi.fn(async (role) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), '# Plan\n\n### Task 1: Build login page\nImplement login.\n');
+      }
       if (role === 'reviewer') {
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nScore: 9/10\nVerdict: APPROVE\n');
       }
@@ -49,9 +48,9 @@ describe('Pipeline integration', () => {
     const result = await engine.run({ stages, project: TEST_DIR, task: 'build a login page' });
 
     expect(result.completed).toBe(true);
-    expect(result.stagesRun).toBe(2);
+    expect(result.stagesRun).toBe(3);
     expect(result.retries).toBe(0);
-    expect(logs.some(l => l.includes('builder → reviewer'))).toBe(true);
+    expect(logs.some(l => l.includes('architect → builder → reviewer'))).toBe(true);
     expect(logs.some(l => l.includes('Pipeline complete'))).toBe(true);
   });
 

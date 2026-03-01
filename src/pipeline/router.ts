@@ -1,8 +1,6 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { findClaudeExecutable } from '../agents/runner.js';
 
 export interface AgentSummary {
   name: string;
@@ -17,126 +15,63 @@ export interface PipelineStage {
   batchScope?: string;
 }
 
-// Type for the Anthropic messages.create function (allows DI for testing)
-export type CreateMessageFn = (params: {
-  model: string;
-  max_tokens: number;
-  messages: Array<{ role: string; content: string }>;
-}) => Promise<{ content: Array<{ type: string; text?: string }> }>;
-
 export interface RouteOptions {
   task: string;
   agents: AgentSummary[];
   projectContext: string;
-  createMessage?: CreateMessageFn;
   manualAgent?: string;
   manualTeams?: boolean;
 }
 
-export async function routeTask(options: RouteOptions): Promise<PipelineStage[]> {
-  const { task, agents, projectContext, manualAgent, manualTeams } = options;
+const RESEARCH_KEYWORDS = ['research', 'evaluate', 'compare', 'investigate', 'explore options', 'which library', 'what framework'];
+const SIMPLE_KEYWORDS = ['fix', 'typo', 'bug', 'update', 'change', 'rename', 'remove', 'delete', 'tweak', 'adjust'];
+const COMPLEX_INDICATORS = /,|\b(and|with|plus)\b/g;
 
-  // Manual override — skip LLM call
+export async function routeTask(options: RouteOptions): Promise<PipelineStage[]> {
+  const { task, manualAgent, manualTeams } = options;
+
   if (manualAgent) {
     return [{ agent: manualAgent, teams: manualTeams ?? false }];
   }
 
-  // Build prompt for Haiku
-  const agentList = agents
-    .map(a => `- ${a.name}: ${a.description}`)
-    .join('\n');
+  const taskLower = task.toLowerCase();
 
-  const prompt = `You are a task router for an AI coding agent system. Given a task and available agents, decide which agents should run and in what order.
-
-Available agents:
-${agentList}
-
-Project context:
-${projectContext || 'No additional context.'}
-
-Task: ${task}
-
-Return a JSON array of pipeline stages. Each stage has:
-- "agent": the agent name (must match one from the list above)
-- "teams": boolean — true only if the task is complex enough that this agent needs to spawn sub-agents for parallel work. Most tasks should be false.
-
-Common patterns:
-- Simple coding task (spec already exists): [{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
-- Feature needing planning (1-4 components): [{"agent":"architect","teams":false},{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
-- Very complex feature (5+ components, multi-domain architecture): [{"agent":"architect","teams":true},{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
-
-Use teams:true for architect when the task describes 5+ distinct components or domains that could be planned in parallel (e.g., "build a web app with auth, dashboard, API, database, and notifications"). Use teams:false for simpler features with 1-4 components. Only the architect stage should ever have teams:true — builder and reviewer always run standalone.
-
-Do NOT include scout as a pipeline stage. If research is needed, Architect will request it during planning.
-
-Return ONLY the JSON array, no explanation.`;
-
-  const createMessage = options.createMessage ?? createDefaultClient();
-
-  const response = await createMessage({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 500,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  const text = response.content.find(b => b.type === 'text')?.text ?? '[]';
-  // Extract JSON from response (handle markdown code blocks)
-  const jsonMatch = text.match(/\[[\s\S]*?\]/);
-  if (!jsonMatch) {
-    throw new Error(`Router returned invalid response: ${text}`);
+  // Pattern 1: Research tasks
+  if (RESEARCH_KEYWORDS.some(kw => taskLower.includes(kw))) {
+    return [
+      { agent: 'scout', teams: false },
+      { agent: 'architect', teams: false },
+      { agent: 'builder', teams: false },
+      { agent: 'reviewer', teams: false },
+    ];
   }
 
-  const stages = JSON.parse(jsonMatch[0]) as PipelineStage[];
-
-  // Validate agent names exist
-  const validNames = new Set(agents.map(a => a.name));
-  for (const stage of stages) {
-    if (!validNames.has(stage.agent)) {
-      throw new Error(`Router selected unknown agent: ${stage.agent}`);
-    }
+  // Pattern 2: Simple fix/bug
+  const isSimple = SIMPLE_KEYWORDS.some(kw => taskLower.startsWith(kw) || taskLower.includes(`${kw} `));
+  const hasNoPlanning = !taskLower.includes('implement') && !taskLower.includes('build') && !taskLower.includes('create') && !taskLower.includes('add') && !taskLower.includes('design');
+  if (isSimple && hasNoPlanning) {
+    return [
+      { agent: 'builder', teams: false },
+      { agent: 'reviewer', teams: false },
+    ];
   }
 
-  return stages;
-}
+  // Pattern 3: Complex (5+ components heuristic)
+  const componentMatches = taskLower.match(COMPLEX_INDICATORS) ?? [];
+  if (componentMatches.length >= 4) {
+    return [
+      { agent: 'architect', teams: true },
+      { agent: 'builder', teams: false },
+      { agent: 'reviewer', teams: false },
+    ];
+  }
 
-function createDefaultClient(): CreateMessageFn {
-  return async (params) => {
-    const claudePath = findClaudeExecutable();
-    const prompt = params.messages.map(m => m.content).join('\n');
-    let text = '';
-
-    // Strip CLAUDECODE env var to avoid "nested session" rejection
-    const env: Record<string, string | undefined> = { ...process.env };
-    delete env['CLAUDECODE'];
-
-    for await (const message of query({
-      prompt,
-      options: {
-        model: 'haiku',
-        maxTurns: 1,
-        allowedTools: [],
-        pathToClaudeCodeExecutable: claudePath,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        env,
-      },
-    })) {
-      const msg = message as Record<string, unknown>;
-      if (msg['type'] === 'assistant' && msg['message']) {
-        const assistantMsg = msg['message'] as Record<string, unknown>;
-        const content = assistantMsg['content'];
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block && typeof block === 'object' && 'type' in block && block.type === 'text' && 'text' in block) {
-              text += String(block.text);
-            }
-          }
-        }
-      }
-    }
-
-    return { content: [{ type: 'text', text }] };
-  };
+  // Pattern 4: Default — feature needing planning
+  return [
+    { agent: 'architect', teams: false },
+    { agent: 'builder', teams: false },
+    { agent: 'reviewer', teams: false },
+  ];
 }
 
 export async function loadAgentSummaries(agentsDir: string): Promise<AgentSummary[]> {
