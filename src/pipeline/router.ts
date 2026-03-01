@@ -60,9 +60,10 @@ Return a JSON array of pipeline stages. Each stage has:
 - "teams": boolean — true only if the task is complex enough that this agent needs to spawn sub-agents for parallel work. Most tasks should be false.
 
 Common patterns:
-- Simple coding task: [{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
-- Complex feature: [{"agent":"architect","teams":false},{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
-- Research needed: [{"agent":"scout","teams":false},{"agent":"architect","teams":false},{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
+- Simple coding task (spec already exists): [{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
+- Complex feature (needs planning): [{"agent":"architect","teams":false},{"agent":"builder","teams":false},{"agent":"reviewer","teams":false}]
+
+Do NOT include scout as a pipeline stage. If research is needed, Architect will request it during planning.
 
 Return ONLY the JSON array, no explanation.`;
 

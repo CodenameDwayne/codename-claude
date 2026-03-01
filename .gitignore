@@ -6,3 +6,4 @@ dist/
 .env*.local
 .worktrees/
 .test-state/
+.codename-claude
