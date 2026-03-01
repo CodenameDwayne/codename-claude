@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { rm, mkdir } from 'node:fs/promises';
+import { rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   HeartbeatLoop,
@@ -174,6 +174,57 @@ describe('HeartbeatLoop', () => {
     // Should NOT be stuck in busy state after error
     const result2 = await loop.tick();
     expect(result2.action).not.toBe('busy');
+  });
+
+  test('detects stalled pipeline and enqueues continuation', async () => {
+    vi.useRealTimers(); // Need real timestamps for file writing
+
+    const projectDir = join(import.meta.dirname, '../../.test-state/heartbeat-stall-test');
+    await mkdir(join(projectDir, '.brain'), { recursive: true });
+
+    const now = Date.now();
+    const staleState = {
+      project: projectDir,
+      task: 'build something',
+      pipeline: ['builder', 'reviewer'],
+      status: 'running',
+      currentStage: 0,
+      startedAt: now - 60 * 60 * 1000, // 1 hour ago
+      updatedAt: now - 45 * 60 * 1000, // 45 min ago (stale)
+      stages: [
+        { agent: 'builder', status: 'running', startedAt: now - 45 * 60 * 1000 },
+        { agent: 'reviewer', status: 'pending' },
+      ],
+      retries: 0,
+    };
+
+    await writeFile(
+      join(projectDir, '.brain', 'pipeline-state.json'),
+      JSON.stringify(staleState),
+    );
+
+    const enqueuedItems: unknown[] = [];
+    const queue = new WorkQueue(QUEUE_FILE);
+    const deps = makeDeps({
+      queue,
+      projectPaths: [projectDir],
+    });
+    // Spy on queue.enqueue to capture items
+    const originalEnqueue = queue.enqueue.bind(queue);
+    queue.enqueue = async (item: QueueItem) => {
+      enqueuedItems.push(item);
+      return originalEnqueue(item);
+    };
+
+    vi.useFakeTimers(); // Restore fake timers for the tick
+    const heartbeat = new HeartbeatLoop(deps);
+    const result = await heartbeat.tick();
+
+    expect(result.action).toBe('queued');
+    expect(enqueuedItems).toHaveLength(1);
+
+    vi.useRealTimers();
+    await rm(projectDir, { recursive: true, force: true });
   });
 
   test('start and stop control the interval', async () => {

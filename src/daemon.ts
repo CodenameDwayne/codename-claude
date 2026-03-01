@@ -185,6 +185,7 @@ async function main(): Promise<void> {
       recordUsage: (count) => recordUsage(count, budgetConfig),
       runPipeline,
       log,
+      projectPaths: [...projectPathsByName.values()],
     },
     { intervalMs: config.heartbeatIntervalMs ?? 60_000 },
   );

@@ -1,6 +1,7 @@
 import type { CronTrigger } from '../triggers/cron.js';
 import type { WorkQueue } from './queue.js';
 import type { PipelineResult } from '../pipeline/engine.js';
+import { readPipelineState, writePipelineState } from '../pipeline/state.js';
 
 export interface HeartbeatDeps {
   triggers: CronTrigger[];
@@ -9,6 +10,7 @@ export interface HeartbeatDeps {
   recordUsage: (promptCount: number) => Promise<void>;
   runPipeline: (project: string, task: string, mode: 'standalone' | 'team', agent?: string) => Promise<PipelineResult>;
   log: (message: string) => void;
+  projectPaths?: string[];
 }
 
 export interface TickResult {
@@ -54,6 +56,37 @@ export class HeartbeatLoop {
   }
 
   private async tickInner(): Promise<TickResult> {
+    // 0. Check for stalled pipelines
+    if (this.deps.projectPaths) {
+      for (const projectPath of this.deps.projectPaths) {
+        const state = await readPipelineState(projectPath);
+        if (state && state.status === 'running') {
+          const staleDuration = Date.now() - state.updatedAt;
+          const STALL_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+          if (staleDuration > STALL_THRESHOLD_MS) {
+            this.deps.log(`[heartbeat] tick #${this.tickCount} — stalled pipeline detected in ${projectPath} (${Math.round(staleDuration / 60000)}m since last update)`);
+
+            state.status = 'stalled';
+            state.updatedAt = Date.now();
+            await writePipelineState(projectPath, state);
+
+            const currentAgent = state.pipeline[state.currentStage] ?? 'builder';
+            await this.deps.queue.enqueue({
+              triggerName: 'stall-recovery',
+              project: projectPath,
+              agent: currentAgent,
+              task: state.task,
+              mode: 'standalone',
+              enqueuedAt: Date.now(),
+            });
+
+            return { action: 'queued', triggerName: 'stall-recovery' };
+          }
+        }
+      }
+    }
+
     // 1. Check triggers
     for (const trigger of this.deps.triggers) {
       if (trigger.isDue()) {
