@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import 'dotenv/config';
-import { existsSync, readFileSync, openSync } from 'node:fs';
-import { cp } from 'node:fs/promises';
+import { existsSync, openSync } from 'node:fs';
+import { readFile, unlink, cp } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -22,22 +22,30 @@ function die(message: string): never {
   process.exit(1);
 }
 
-function isDaemonRunning(): boolean {
-  if (!existsSync(PID_FILE_DEFAULT)) return false;
+async function isDaemonRunning(): Promise<boolean> {
   try {
-    const pid = parseInt(readFileSync(PID_FILE_DEFAULT, 'utf-8').trim(), 10);
-    // Check if process exists (signal 0 just checks, doesn't send a signal)
-    process.kill(pid, 0);
-    return true;
+    const pidStr = await readFile(PID_FILE_DEFAULT, 'utf-8');
+    const pid = parseInt(pidStr.trim(), 10);
+    if (isNaN(pid)) return false;
+
+    // Attempt IPC handshake instead of just checking PID exists
+    try {
+      const response = await sendCommand(SOCKET_PATH_DEFAULT, { type: 'status' }, 3_000);
+      return response.ok === true;
+    } catch {
+      // IPC failed — stale PID file, clean up
+      await unlink(PID_FILE_DEFAULT).catch(() => {});
+      return false;
+    }
   } catch {
     return false;
   }
 }
 
-function getDaemonPid(): number | null {
-  if (!existsSync(PID_FILE_DEFAULT)) return null;
+async function getDaemonPid(): Promise<number | null> {
   try {
-    return parseInt(readFileSync(PID_FILE_DEFAULT, 'utf-8').trim(), 10);
+    const pidStr = await readFile(PID_FILE_DEFAULT, 'utf-8');
+    return parseInt(pidStr.trim(), 10);
   } catch {
     return null;
   }
@@ -68,8 +76,8 @@ function formatTimestamp(ts: number | null): string {
 // --- Commands ---
 
 async function cmdStart(): Promise<void> {
-  if (isDaemonRunning()) {
-    console.log('Daemon is already running (PID: %d)', getDaemonPid());
+  if (await isDaemonRunning()) {
+    console.log('Daemon is already running (PID: %d)', await getDaemonPid());
     return;
   }
 
@@ -101,8 +109,8 @@ async function cmdStart(): Promise<void> {
   // Wait briefly for the daemon to start and write its PID file
   await new Promise((r) => setTimeout(r, 1500));
 
-  if (isDaemonRunning()) {
-    console.log('Daemon started (PID: %d)', getDaemonPid());
+  if (await isDaemonRunning()) {
+    console.log('Daemon started (PID: %d)', await getDaemonPid());
     console.log('Logs: %s', logFile);
   } else {
     console.error('Daemon failed to start. Check logs: %s', logFile);
@@ -111,7 +119,7 @@ async function cmdStart(): Promise<void> {
 }
 
 async function cmdStop(): Promise<void> {
-  if (!isDaemonRunning()) {
+  if (!(await isDaemonRunning())) {
     console.log('Daemon is not running.');
     return;
   }
@@ -122,7 +130,7 @@ async function cmdStop(): Promise<void> {
     // Wait for PID file to disappear
     for (let i = 0; i < 10; i++) {
       await new Promise((r) => setTimeout(r, 500));
-      if (!isDaemonRunning()) {
+      if (!(await isDaemonRunning())) {
         console.log('Daemon stopped.');
         return;
       }
@@ -134,7 +142,7 @@ async function cmdStop(): Promise<void> {
 }
 
 async function cmdStatus(): Promise<void> {
-  if (!isDaemonRunning()) {
+  if (!(await isDaemonRunning())) {
     console.log('Daemon is not running.');
     return;
   }
@@ -357,7 +365,7 @@ async function cmdInteractive(args: string[]): Promise<void> {
 
   // Resolve project path — check if daemon knows it, or use as-is
   let projectPath = resolve(project);
-  if (isDaemonRunning()) {
+  if (await isDaemonRunning()) {
     const response = await send({ type: 'projects-list' });
     if (response.ok) {
       const data = response.data as { projects: ProjectEntry[] };
