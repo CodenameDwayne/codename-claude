@@ -74,9 +74,6 @@ try {
   console.log(`Agent:     ${result.agentName}`);
   console.log(`Mode:      ${result.mode}`);
   console.log(`Sandboxed: ${result.sandboxed}`);
-  if (result.syncedFiles) {
-    console.log(`Synced:    ${result.syncedFiles.join(', ')}`);
-  }
 } catch (error) {
   console.error('Run failed:', error);
   process.exit(1);

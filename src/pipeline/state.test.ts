@@ -5,7 +5,6 @@ import {
   type PipelineState,
   readPipelineState,
   writePipelineState,
-  updateStageStatus,
   REVIEW_JSON_SCHEMA,
 } from './state.js';
 
@@ -57,36 +56,4 @@ describe('PipelineState', () => {
     expect(severityEnum).toContain('critical');
   });
 
-  test('updateStageStatus updates a specific stage and bumps updatedAt', async () => {
-    const now = Date.now();
-    const state: PipelineState = {
-      project: TEST_DIR,
-      task: 'build something',
-      pipeline: ['builder', 'reviewer'],
-      status: 'running',
-      currentStage: 0,
-      startedAt: now,
-      updatedAt: now,
-      stages: [
-        { agent: 'builder', status: 'running', startedAt: now },
-        { agent: 'reviewer', status: 'pending' },
-      ],
-      retries: 0,
-    };
-
-    await writePipelineState(TEST_DIR, state);
-
-    await updateStageStatus(TEST_DIR, 0, {
-      status: 'completed',
-      completedAt: now + 5000,
-      sessionId: 'session-abc',
-      validation: 'passed',
-    });
-
-    const updated = await readPipelineState(TEST_DIR);
-    expect(updated!.stages[0]!.status).toBe('completed');
-    expect(updated!.stages[0]!.sessionId).toBe('session-abc');
-    expect(updated!.stages[0]!.validation).toBe('passed');
-    expect(updated!.updatedAt).toBeGreaterThanOrEqual(now);
-  });
 });

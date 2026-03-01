@@ -78,19 +78,3 @@ export const REVIEW_JSON_SCHEMA = {
   },
   required: ['verdict', 'score', 'summary', 'issues', 'patternsCompliance'],
 } as const;
-
-export async function updateStageStatus(
-  projectDir: string,
-  stageIndex: number,
-  update: Partial<StageState>,
-): Promise<void> {
-  const state = await readPipelineState(projectDir);
-  if (!state) throw new Error('No pipeline state to update');
-
-  const stage = state.stages[stageIndex];
-  if (!stage) throw new Error(`Stage ${stageIndex} not found`);
-
-  Object.assign(stage, update);
-  state.updatedAt = Date.now();
-  await writePipelineState(projectDir, state);
-}

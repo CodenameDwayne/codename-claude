@@ -75,9 +75,9 @@ export interface RunResult {
   agentName: string;
   sandboxed: boolean;
   mode: 'standalone' | 'team';
-  syncedFiles?: string[];
   sessionId?: string;
   structuredOutput?: unknown;
+  turnCount: number;
 }
 
 export interface RunOptions {
@@ -310,6 +310,7 @@ export async function runAgent(
   const isReviewer = role === 'reviewer' || role.includes('review');
   let sessionId: string | undefined;
   let structuredOutput: unknown | undefined;
+  let turnCount = 0;
 
   for await (const message of query({
     prompt: task,
@@ -354,6 +355,10 @@ export async function runAgent(
       }
     }
 
+    if (msg['type'] === 'assistant') {
+      turnCount++;
+    }
+
     if (msg['type'] === 'assistant' && msg['message']) {
       const assistantMsg = msg['message'] as Record<string, unknown>;
       const content = assistantMsg['content'];
@@ -379,5 +384,6 @@ export async function runAgent(
     mode,
     sessionId,
     structuredOutput,
+    turnCount,
   };
 }
