@@ -99,6 +99,17 @@ describe('WorkQueue', () => {
     expect(item!.triggerName).toBe('survivor');
   });
 
+  test('handles concurrent enqueue operations safely', async () => {
+    const queue = new WorkQueue(TEST_STATE_FILE);
+    const item = { triggerName: 'test', project: '/tmp', agent: 'builder', task: 'test', mode: 'standalone' as const, enqueuedAt: Date.now() };
+    await Promise.all([
+      queue.enqueue({ ...item, triggerName: 'a' }),
+      queue.enqueue({ ...item, triggerName: 'b' }),
+      queue.enqueue({ ...item, triggerName: 'c' }),
+    ]);
+    expect(await queue.size()).toBe(3);
+  });
+
   test('size returns number of items', async () => {
     const queue = new WorkQueue(TEST_STATE_FILE);
     expect(await queue.size()).toBe(0);

@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { lock } from 'proper-lockfile';
 
 export interface BudgetConfig {
   maxPromptsPerWindow: number;
@@ -40,11 +41,26 @@ function sumUsage(entries: UsageEntry[]): number {
   return entries.reduce((sum, e) => sum + e.count, 0);
 }
 
+async function ensureFile(stateFile: string): Promise<void> {
+  try {
+    await readFile(stateFile);
+  } catch {
+    await mkdir(dirname(stateFile), { recursive: true });
+    await writeFile(stateFile, JSON.stringify({ entries: [] }));
+  }
+}
+
 export async function recordUsage(promptCount: number, config: BudgetConfig): Promise<void> {
-  const state = await loadBudgetState(config.stateFile);
-  state.entries = pruneExpiredEntries(state.entries, config.windowHours);
-  state.entries.push({ timestamp: Date.now(), count: promptCount });
-  await saveBudgetState(state, config.stateFile);
+  await ensureFile(config.stateFile);
+  const release = await lock(config.stateFile, { retries: 3, realpath: false });
+  try {
+    const state = await loadBudgetState(config.stateFile);
+    state.entries = pruneExpiredEntries(state.entries, config.windowHours);
+    state.entries.push({ timestamp: Date.now(), count: promptCount });
+    await saveBudgetState(state, config.stateFile);
+  } finally {
+    await release();
+  }
 }
 
 export async function getRemainingBudget(config: BudgetConfig): Promise<number> {

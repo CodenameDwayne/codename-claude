@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { lock } from 'proper-lockfile';
 
 export interface ProjectEntry {
   path: string;
@@ -26,27 +27,42 @@ async function saveState(state: ProjectsState, stateFile: string): Promise<void>
   await writeFile(stateFile, JSON.stringify(state, null, 2));
 }
 
+async function ensureFile(stateFile: string): Promise<void> {
+  try {
+    await readFile(stateFile);
+  } catch {
+    await mkdir(dirname(stateFile), { recursive: true });
+    await writeFile(stateFile, JSON.stringify({ projects: [] }));
+  }
+}
+
 export async function registerProject(
   path: string,
   name: string,
   stateFile: string,
 ): Promise<ProjectEntry> {
-  const state = await loadState(stateFile);
+  await ensureFile(stateFile);
+  const release = await lock(stateFile, { retries: 3, realpath: false });
+  try {
+    const state = await loadState(stateFile);
 
-  if (state.projects.some((p) => p.path === path || p.name === name)) {
-    throw new Error(`Project already registered: ${name} (${path})`);
+    if (state.projects.some((p) => p.path === path || p.name === name)) {
+      throw new Error(`Project already registered: ${name} (${path})`);
+    }
+
+    const entry: ProjectEntry = {
+      path,
+      name,
+      registered: Date.now(),
+      lastSession: null,
+    };
+
+    state.projects.push(entry);
+    await saveState(state, stateFile);
+    return entry;
+  } finally {
+    await release();
   }
-
-  const entry: ProjectEntry = {
-    path,
-    name,
-    registered: Date.now(),
-    lastSession: null,
-  };
-
-  state.projects.push(entry);
-  await saveState(state, stateFile);
-  return entry;
 }
 
 export async function listProjects(stateFile: string): Promise<ProjectEntry[]> {
@@ -66,17 +82,23 @@ export async function unregisterProject(
   pathOrName: string,
   stateFile: string,
 ): Promise<void> {
-  const state = await loadState(stateFile);
-  const idx = state.projects.findIndex(
-    (p) => p.path === pathOrName || p.name === pathOrName,
-  );
+  await ensureFile(stateFile);
+  const release = await lock(stateFile, { retries: 3, realpath: false });
+  try {
+    const state = await loadState(stateFile);
+    const idx = state.projects.findIndex(
+      (p) => p.path === pathOrName || p.name === pathOrName,
+    );
 
-  if (idx === -1) {
-    throw new Error(`Project not found: ${pathOrName}`);
+    if (idx === -1) {
+      throw new Error(`Project not found: ${pathOrName}`);
+    }
+
+    state.projects.splice(idx, 1);
+    await saveState(state, stateFile);
+  } finally {
+    await release();
   }
-
-  state.projects.splice(idx, 1);
-  await saveState(state, stateFile);
 }
 
 export async function updateLastSession(
@@ -84,15 +106,21 @@ export async function updateLastSession(
   timestamp: number,
   stateFile: string,
 ): Promise<void> {
-  const state = await loadState(stateFile);
-  const project = state.projects.find(
-    (p) => p.path === pathOrName || p.name === pathOrName,
-  );
+  await ensureFile(stateFile);
+  const release = await lock(stateFile, { retries: 3, realpath: false });
+  try {
+    const state = await loadState(stateFile);
+    const project = state.projects.find(
+      (p) => p.path === pathOrName || p.name === pathOrName,
+    );
 
-  if (!project) {
-    throw new Error(`Project not found: ${pathOrName}`);
+    if (!project) {
+      throw new Error(`Project not found: ${pathOrName}`);
+    }
+
+    project.lastSession = timestamp;
+    await saveState(state, stateFile);
+  } finally {
+    await release();
   }
-
-  project.lastSession = timestamp;
-  await saveState(state, stateFile);
 }
