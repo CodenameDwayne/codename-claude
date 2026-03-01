@@ -166,7 +166,20 @@ describe('PipelineEngine review loop', () => {
   });
 
   test('buildStageTask tells architect to read RESEARCH/ when scout precedes it', async () => {
-    const runner = makeRunner();
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'scout') {
+        const researchDir = join(BRAIN_DIR, 'RESEARCH');
+        await mkdir(researchDir, { recursive: true });
+        await writeFile(join(researchDir, 'findings.md'), '# Findings\nSome research...');
+      }
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), '# Plan\n\n### Task 1: Do something\nDetails...\n');
+      }
+      if (role === 'reviewer') {
+        await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
     const logs: string[] = [];
     const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
 
@@ -710,6 +723,79 @@ describe('PipelineEngine parseReviewVerdict fail-closed', () => {
 
     expect(result.completed).toBe(false);
     expect(result.finalVerdict).toBe('REVISE');
+  });
+});
+
+describe('PipelineEngine validateScout', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('fails validation when scout does not create RESEARCH directory', async () => {
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      // Scout runs but does NOT create .brain/RESEARCH/
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [{ agent: 'scout', teams: false }],
+      project: TEST_PROJECT,
+      task: 'research something',
+    });
+
+    expect(result.completed).toBe(false);
+    expect(result.finalVerdict).toContain('VALIDATION_FAILED');
+    expect(result.finalVerdict).toContain('RESEARCH');
+  });
+
+  test('fails validation when RESEARCH directory has no .md files', async () => {
+    const researchDir = join(BRAIN_DIR, 'RESEARCH');
+    await mkdir(researchDir, { recursive: true });
+    // Create a non-md file
+    await writeFile(join(researchDir, 'notes.txt'), 'some notes');
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [{ agent: 'scout', teams: false }],
+      project: TEST_PROJECT,
+      task: 'research something',
+    });
+
+    expect(result.completed).toBe(false);
+    expect(result.finalVerdict).toContain('VALIDATION_FAILED');
+    expect(result.finalVerdict).toContain('research');
+  });
+
+  test('passes validation when RESEARCH directory has .md files', async () => {
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'scout') {
+        const researchDir = join(BRAIN_DIR, 'RESEARCH');
+        await mkdir(researchDir, { recursive: true });
+        await writeFile(join(researchDir, 'findings.md'), '# Research\nSome findings...');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [{ agent: 'scout', teams: false }],
+      project: TEST_PROJECT,
+      task: 'research something',
+    });
+
+    expect(result.completed).toBe(true);
   });
 });
 

@@ -299,6 +299,9 @@ export class PipelineEngine {
   }
 
   private async validateStage(agent: string, project: string, structuredOutput?: unknown): Promise<string | null> {
+    if (agent === 'scout' || agent.includes('scout')) {
+      return this.validateScout(project);
+    }
     if (agent === 'architect' || agent.includes('architect')) {
       return this.validateArchitect(project);
     }
@@ -307,6 +310,20 @@ export class PipelineEngine {
     }
     if (agent === 'reviewer' || agent.includes('review')) {
       return this.validateReviewer(project, structuredOutput);
+    }
+    return null;
+  }
+
+  private async validateScout(project: string): Promise<string | null> {
+    const researchDir = join(project, '.brain', 'RESEARCH');
+    try {
+      const entries = await readdir(researchDir);
+      const mdFiles = entries.filter(e => e.endsWith('.md'));
+      if (mdFiles.length === 0) {
+        return 'Scout did not produce any research files in .brain/RESEARCH/';
+      }
+    } catch {
+      return 'Scout did not create .brain/RESEARCH/ directory';
     }
     return null;
   }
