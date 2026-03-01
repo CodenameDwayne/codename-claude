@@ -1,18 +1,16 @@
-import type { PipelineStage } from './router.js';
-
-export interface PlanTask {
-  number: number;
+export interface CheckboxTask {
   title: string;
+  checked: boolean;
 }
 
-export function parsePlanTasks(planContent: string): PlanTask[] {
-  const tasks: PlanTask[] = [];
-  const regex = /^###\s+Task\s+(\d+):\s*(.+)$/gm;
+export function parseCheckboxTasks(planContent: string): CheckboxTask[] {
+  const tasks: CheckboxTask[] = [];
+  const regex = /^- \[([ x])\] (.+)$/gm;
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(planContent)) !== null) {
     tasks.push({
-      number: parseInt(match[1]!, 10),
+      checked: match[1] === 'x',
       title: match[2]!.trim(),
     });
   }
@@ -20,33 +18,12 @@ export function parsePlanTasks(planContent: string): PlanTask[] {
   return tasks;
 }
 
-export function expandStagesWithBatches(
-  stages: PipelineStage[],
-  taskCount: number,
-  expandFrom: string,
-  batchSize: number = 3,
-): PipelineStage[] {
-  if (taskCount === 0) return stages;
+export function markTaskComplete(planContent: string, taskTitle: string): string {
+  return planContent.replace(`- [ ] ${taskTitle}`, `- [x] ${taskTitle}`);
+}
 
-  const expandIdx = stages.findIndex(s => s.agent === expandFrom || s.agent.includes(expandFrom));
-  if (expandIdx < 0) return stages;
-
-  const reviewerIdx = stages.findIndex((s, i) => i > expandIdx && (s.agent === 'reviewer' || s.agent.includes('review')));
-  if (reviewerIdx < 0) return stages;
-
-  const before = stages.slice(0, expandIdx);
-  const builderTemplate = stages[expandIdx]!;
-  const reviewerTemplate = stages[reviewerIdx]!;
-
-  const batches: PipelineStage[] = [];
-  for (let start = 1; start <= taskCount; start += batchSize) {
-    const end = Math.min(start + batchSize - 1, taskCount);
-    const scope = start === end ? `Task ${start}` : `Tasks ${start}-${end}`;
-
-    batches.push({ ...builderTemplate, batchScope: scope });
-    batches.push({ ...reviewerTemplate, batchScope: scope });
-  }
-
-  const after = stages.slice(reviewerIdx + 1);
-  return [...before, ...batches, ...after];
+export function findNextTask(planContent: string): string | null {
+  const tasks = parseCheckboxTasks(planContent);
+  const next = tasks.find(t => !t.checked);
+  return next?.title ?? null;
 }
