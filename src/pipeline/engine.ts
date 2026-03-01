@@ -250,6 +250,9 @@ export class PipelineEngine {
           const architectIdx = stages.findIndex(s => s.agent === 'architect' || s.agent.includes('architect'));
           const restartIdx = architectIdx >= 0 ? architectIdx : 0;
           this.config.log(`[pipeline] Reviewer verdict: REDESIGN — restarting from ${stages[restartIdx]!.agent} (retry ${totalRetries})`);
+          const globalRetries = batchRetries.get('global') ?? 0;
+          batchRetries.clear();
+          if (globalRetries > 0) batchRetries.set('global', globalRetries);
           for (let j = restartIdx; j < stages.length; j++) {
             pipelineState.stages[j]!.status = 'pending';
             pipelineState.stages[j]!.startedAt = undefined;

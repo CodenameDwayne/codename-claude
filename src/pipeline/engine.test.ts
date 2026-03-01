@@ -1526,4 +1526,73 @@ describe('PipelineEngine state rebuild after REDESIGN', () => {
     expect(logs.some(l => l.includes('REDESIGN'))).toBe(true);
     expect(architectCallCount).toBe(2);
   });
+
+  test('clears per-batch retry counters on REDESIGN', async () => {
+    // After REDESIGN, batch retry counts should reset so new batches get a fresh budget.
+    // Scenario: batch uses 1 REVISE retry, then reviewer issues REDESIGN.
+    // After REDESIGN re-expansion, the same batch scope should get full retry budget.
+
+    let architectCallCount = 0;
+    let reviewerCallCount = 0;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        architectCallCount++;
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), `# Plan\n### Task 1: Build feature\n`);
+      }
+      if (role === 'reviewer') {
+        reviewerCallCount++;
+        if (reviewerCallCount === 1) {
+          // First review: REVISE (consumes 1 retry for batch "Task 1")
+          return {
+            agentName: role, sandboxed: false, mode: 'standalone' as const,
+            structuredOutput: {
+              verdict: 'REVISE', score: 5, summary: 'Needs fixes',
+              issues: [{ severity: 'major' as const, description: 'Bug' }],
+              patternsCompliance: true,
+            },
+          };
+        }
+        if (reviewerCallCount === 2) {
+          // Second review: REDESIGN (triggers restart from architect)
+          return {
+            agentName: role, sandboxed: false, mode: 'standalone' as const,
+            structuredOutput: {
+              verdict: 'REDESIGN', score: 2, summary: 'Wrong approach',
+              issues: [{ severity: 'critical' as const, description: 'Rethink needed' }],
+              patternsCompliance: false,
+            },
+          };
+        }
+        // Third review onward: APPROVE
+        return {
+          agentName: role, sandboxed: false, mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: 'APPROVE', score: 9, summary: 'Good',
+            issues: [], patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build feature',
+    });
+
+    // Pipeline should complete — the batch got a fresh retry budget after REDESIGN
+    expect(result.completed).toBe(true);
+    expect(architectCallCount).toBe(2);
+    expect(logs.some(l => l.includes('REDESIGN'))).toBe(true);
+    expect(logs.some(l => l.includes('REVISE'))).toBe(true);
+  });
 });

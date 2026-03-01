@@ -66,6 +66,24 @@ describe('routeTask', () => {
     expect(result.map(s => s.agent)).toEqual(['architect', 'builder', 'reviewer']);
   });
 
+  test('routes update task with non-trivial scope to architect pipeline', async () => {
+    const result = await routeTask({
+      task: 'update the authentication flow to use JWT',
+      agents: mockAgents,
+      projectContext: '',
+    });
+    expect(result.map(s => s.agent)).toEqual(['architect', 'builder', 'reviewer']);
+  });
+
+  test('routes change task with non-trivial scope to architect pipeline', async () => {
+    const result = await routeTask({
+      task: 'change the database schema to support multi-tenancy',
+      agents: mockAgents,
+      projectContext: '',
+    });
+    expect(result.map(s => s.agent)).toEqual(['architect', 'builder', 'reviewer']);
+  });
+
   test('routes complex feature with teams on architect', async () => {
     const result = await routeTask({
       task: 'build a web app with auth, dashboard, API, database, notifications, and payment',

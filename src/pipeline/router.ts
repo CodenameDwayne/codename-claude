@@ -48,7 +48,7 @@ export async function routeTask(options: RouteOptions): Promise<PipelineStage[]>
 
   // Pattern 2: Simple fix/bug
   const isSimple = SIMPLE_KEYWORDS.some(kw => taskLower.startsWith(kw) || taskLower.includes(`${kw} `));
-  const hasNoPlanning = !taskLower.includes('implement') && !taskLower.includes('build') && !taskLower.includes('create') && !taskLower.includes('add') && !taskLower.includes('design');
+  const hasNoPlanning = !taskLower.includes('implement') && !taskLower.includes('build') && !taskLower.includes('create') && !taskLower.includes('add') && !taskLower.includes('design') && !taskLower.includes('update') && !taskLower.includes('change');
   if (isSimple && hasNoPlanning) {
     return [
       { agent: 'builder', teams: false },
