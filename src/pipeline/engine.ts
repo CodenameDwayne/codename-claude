@@ -287,10 +287,10 @@ export class PipelineEngine {
       const reviewPath = join(project, '.brain', 'REVIEW.md');
       const content = await readFile(reviewPath, 'utf-8');
       const match = content.match(/\*{0,2}Verdict:?\*{0,2}\s*(APPROVE|REVISE|REDESIGN)/i);
-      return match ? match[1]!.toUpperCase() : 'APPROVE';
+      return match ? match[1]!.toUpperCase() : 'REVISE';
     } catch {
-      // No REVIEW.md — assume approved
-      return 'APPROVE';
+      // No REVIEW.md — fail-closed, default to REVISE
+      return 'REVISE';
     }
   }
 
