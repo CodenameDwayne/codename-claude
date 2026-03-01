@@ -1,4 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { CronTrigger, type TriggerConfig } from './cron.js';
 
 const baseTrigger: TriggerConfig = {
@@ -121,5 +124,54 @@ describe('CronTrigger', () => {
     nextNineAm.setDate(nextNineAm.getDate() + 1);
     vi.setSystemTime(nextNineAm);
     expect(trigger.isDue()).toBe(true);
+  });
+
+  describe('state persistence', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'cron-test-'));
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test('persists lastFiredAt to state file', () => {
+      const onMinute = new Date('2026-02-27T10:01:00.000Z').getTime();
+      vi.setSystemTime(onMinute);
+
+      const trigger = new CronTrigger(baseTrigger, { stateDir: tmpDir });
+      trigger.markFired();
+
+      // Create new trigger instance — should restore lastFiredAt
+      const trigger2 = new CronTrigger(baseTrigger, { stateDir: tmpDir });
+      trigger2.loadState();
+      expect(trigger2.getLastFiredAt()).toBeTruthy();
+    });
+
+    test('restored trigger does not re-fire immediately', () => {
+      const onMinute = new Date('2026-02-27T10:01:00.000Z').getTime();
+      vi.setSystemTime(onMinute);
+
+      const trigger = new CronTrigger(baseTrigger, { stateDir: tmpDir });
+      trigger.markFired();
+
+      // 30 seconds later — new instance should not be due
+      vi.setSystemTime(onMinute + 30 * 1000);
+      const trigger2 = new CronTrigger(baseTrigger, { stateDir: tmpDir });
+      trigger2.loadState();
+      expect(trigger2.isDue()).toBe(false);
+    });
+
+    test('works without stateDir (no persistence)', () => {
+      const onMinute = new Date('2026-02-27T10:01:00.000Z').getTime();
+      vi.setSystemTime(onMinute);
+
+      const trigger = new CronTrigger(baseTrigger);
+      trigger.markFired();
+      expect(trigger.getLastFiredAt()).toBeTruthy();
+      // No error — just doesn't persist
+    });
   });
 });
