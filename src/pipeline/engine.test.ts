@@ -1223,4 +1223,50 @@ describe('PipelineEngine builder/architect retry prompts', () => {
     expect(secondBuilderCall!.task).toContain('REVIEW.md');
     expect(secondBuilderCall!.task).toContain('fix all listed issues');
   });
+
+  test('architect REDESIGN prompt includes REVIEW.md instruction', async () => {
+    let reviewCount = 0;
+    const taskArgs: { role: string; task: string }[] = [];
+    const runner: PipelineRunnerFn = vi.fn(async (role: string, _project: string, task: string) => {
+      taskArgs.push({ role, task });
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), '# Plan\n\n### Task 1: Do something\nDetails...\n');
+      }
+      if (role === 'reviewer') {
+        reviewCount++;
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: reviewCount === 1 ? 'REDESIGN' : 'APPROVE',
+            score: reviewCount === 1 ? 2 : 9,
+            summary: 'Review',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    // arch(1) → builder(2) → reviewer(3,REDESIGN) → arch(4) → builder(5) → reviewer(6,APPROVE)
+    // The second architect call should include REVIEW.md and REDESIGN instruction
+    const secondArchitectCall = taskArgs.filter(t => t.role === 'architect')[1];
+    expect(secondArchitectCall).toBeDefined();
+    expect(secondArchitectCall!.task).toContain('REVIEW.md');
+    expect(secondArchitectCall!.task).toContain('REDESIGN');
+  });
 });

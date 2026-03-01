@@ -498,7 +498,13 @@ export class PipelineEngine {
       const teamInstruction = isTeamMode
         ? `\n\nCRITICAL — TEAM MODE IS MANDATORY: You are running with Claude Agent Teams enabled. This is NON-NEGOTIABLE — you MUST use the TeamCreate tool to create a planning team, then spawn teammates via the Task tool (with name and team_name parameters) to write plan sections in parallel. Follow the plan-feature-team skill EXACTLY. Do NOT write the plan yourself. Do NOT skip team creation regardless of plan size. The user explicitly requested team mode — if you write PLAN.md directly without creating a team first, you are violating a hard requirement. Your first tool call after reading context and writing DECISIONS.md MUST be TeamCreate.`
         : '';
-      return `Design the architecture and create a detailed implementation plan for the following task. Start by reading .brain/RESEARCH/ if it exists — this contains research from the Scout agent. Then follow the plan-feature skill. Write the plan to .brain/PLAN.md and any architectural decisions to .brain/DECISIONS.md. Do NOT write any source code, config files, or install dependencies — you ONLY write to .brain/ files. The Builder agent will handle all implementation.${teamInstruction}\n\nTask: ${originalTask}`;
+      const isRedesign = retries > 0 && stages.some(
+        s => s.agent === 'reviewer' || s.agent.includes('review')
+      );
+      const redesignInstruction = isRedesign
+        ? `\n\nCRITICAL — REDESIGN: A reviewer rejected the previous architecture. Read .brain/REVIEW.md FIRST for their feedback. Your new plan must address all the reviewer's concerns.`
+        : '';
+      return `Design the architecture and create a detailed implementation plan for the following task. Start by reading .brain/RESEARCH/ if it exists — this contains research from the Scout agent. Then follow the plan-feature skill. Write the plan to .brain/PLAN.md and any architectural decisions to .brain/DECISIONS.md. Do NOT write any source code, config files, or install dependencies — you ONLY write to .brain/ files. The Builder agent will handle all implementation.${redesignInstruction}${teamInstruction}\n\nTask: ${originalTask}`;
     }
 
     return originalTask;
