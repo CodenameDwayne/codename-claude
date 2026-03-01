@@ -9,7 +9,13 @@ const TEST_PROJECT = join(import.meta.dirname, '../../.test-state/pipeline-test'
 const BRAIN_DIR = join(TEST_PROJECT, '.brain');
 
 function makeRunner(): PipelineRunnerFn {
-  return vi.fn(async () => ({ agentName: 'builder', sandboxed: false, mode: 'standalone' as const }));
+  return vi.fn(async (role: string) => {
+    // Write REVIEW.md for reviewer stages so validation passes
+    if (role === 'reviewer' || role.includes('review')) {
+      await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
+    }
+    return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+  });
 }
 
 describe('PipelineEngine', () => {
@@ -194,5 +200,77 @@ describe('PipelineEngine review loop', () => {
     expect(state!.stages[1]!.status).toBe('completed');
     expect(state!.stages[1]!.sessionId).toBe('session-reviewer');
     expect(state!.finalVerdict).toBe('APPROVE');
+  });
+
+  test('accepts structured review output and extracts verdict', async () => {
+    const reviewOutput = {
+      verdict: 'APPROVE',
+      score: 8,
+      summary: 'Well implemented',
+      issues: [{ severity: 'nit', description: 'unused variable' }],
+      patternsCompliance: true,
+    };
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      return {
+        agentName: role,
+        sandboxed: false,
+        mode: 'standalone' as const,
+        structuredOutput: role === 'reviewer' ? reviewOutput : undefined,
+      };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(true);
+    expect(result.finalVerdict).toBe('APPROVE');
+    expect(result.review).toEqual(reviewOutput);
+  });
+
+  test('uses structured output REVISE verdict for retry routing', async () => {
+    let reviewCount = 0;
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'reviewer') {
+        reviewCount++;
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: reviewCount === 1 ? 'REVISE' : 'APPROVE',
+            score: reviewCount === 1 ? 5 : 9,
+            summary: 'Review',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    // builder → reviewer(REVISE) → builder → reviewer(APPROVE)
+    expect(runner).toHaveBeenCalledTimes(4);
+    expect(result.retries).toBe(1);
+    expect(result.completed).toBe(true);
   });
 });

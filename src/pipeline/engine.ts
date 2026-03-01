@@ -1,13 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PipelineStage } from './router.js';
-import { writePipelineState, type PipelineState } from './state.js';
+import { writePipelineState, type PipelineState, type ReviewOutput } from './state.js';
 
 export interface RunnerResult {
   agentName: string;
   sandboxed: boolean;
   mode: 'standalone' | 'team';
   sessionId?: string;
+  structuredOutput?: unknown;
 }
 
 export interface RunnerOptions {
@@ -42,6 +43,7 @@ export interface PipelineResult {
   retries: number;
   finalVerdict?: string;
   sessionIds?: Record<string, string>;
+  review?: ReviewOutput;
 }
 
 export class PipelineEngine {
@@ -76,6 +78,7 @@ export class PipelineEngine {
     await writePipelineState(project, pipelineState);
 
     const sessionIds: Record<string, string> = {};
+    let lastReviewOutput: ReviewOutput | undefined;
     let i = 0;
     let stagesRun = 0;
 
@@ -111,7 +114,7 @@ export class PipelineEngine {
       this.config.log(`[pipeline] Stage ${i + 1}/${stages.length}: ${stage.agent} completed`);
 
       // Post-stage validation
-      const validationError = await this.validateStage(stage.agent, project);
+      const validationError = await this.validateStage(stage.agent, project, result.structuredOutput);
       if (validationError) {
         this.config.log(`[pipeline] VALIDATION FAILED for ${stage.agent}: ${validationError}`);
         pipelineState.stages[i]!.status = 'failed';
@@ -121,7 +124,7 @@ export class PipelineEngine {
         pipelineState.error = validationError;
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
-        return { completed: false, stagesRun, retries, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds };
+        return { completed: false, stagesRun, retries, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds, review: lastReviewOutput };
       }
 
       pipelineState.stages[i]!.status = 'completed';
@@ -134,10 +137,26 @@ export class PipelineEngine {
 
       // Check review verdict after reviewer stages
       if (stage.agent === 'reviewer' || stage.agent.includes('review')) {
-        const verdict = await this.parseReviewVerdict(project);
+        let verdict: string;
+
+        // Prefer structured output over file parsing
+        if (result.structuredOutput && typeof result.structuredOutput === 'object') {
+          const review = result.structuredOutput as ReviewOutput;
+          lastReviewOutput = review;
+          verdict = review.verdict;
+          this.config.log(`[pipeline] Reviewer verdict: ${verdict} (${review.score}/10, ${review.issues.length} issues)`);
+
+          // Log patterns compliance warning
+          if (review.patternsCompliance === false) {
+            this.config.log(`[pipeline] WARNING: Reviewer reports patterns non-compliance. Review .brain/PATTERNS.md adherence.`);
+          }
+        } else {
+          // Fallback: parse from REVIEW.md (backwards compat)
+          verdict = await this.parseReviewVerdict(project);
+          this.config.log(`[pipeline] Reviewer verdict: ${verdict} (from REVIEW.md fallback)`);
+        }
 
         if (verdict === 'APPROVE') {
-          this.config.log(`[pipeline] Reviewer verdict: APPROVE`);
           i++;
           continue;
         }
@@ -149,7 +168,7 @@ export class PipelineEngine {
           pipelineState.retries = retries;
           pipelineState.updatedAt = Date.now();
           await writePipelineState(project, pipelineState);
-          return { completed: false, stagesRun, retries, finalVerdict: verdict, sessionIds };
+          return { completed: false, stagesRun, retries, finalVerdict: verdict, sessionIds, review: lastReviewOutput };
         }
 
         retries++;
@@ -159,7 +178,6 @@ export class PipelineEngine {
           const architectIdx = stages.findIndex(s => s.agent === 'architect' || s.agent.includes('architect'));
           const restartIdx = architectIdx >= 0 ? architectIdx : 0;
           this.config.log(`[pipeline] Reviewer verdict: REDESIGN — restarting from ${stages[restartIdx]!.agent} (retry ${retries})`);
-          // Reset stage statuses for re-run
           for (let j = restartIdx; j < stages.length; j++) {
             pipelineState.stages[j]!.status = 'pending';
             pipelineState.stages[j]!.startedAt = undefined;
@@ -199,7 +217,7 @@ export class PipelineEngine {
     pipelineState.updatedAt = Date.now();
     await writePipelineState(project, pipelineState);
 
-    return { completed: true, stagesRun, retries, finalVerdict: 'APPROVE', sessionIds };
+    return { completed: true, stagesRun, retries, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
   }
 
   private async parseReviewVerdict(project: string): Promise<string> {
@@ -214,7 +232,7 @@ export class PipelineEngine {
     }
   }
 
-  private async validateStage(agent: string, project: string): Promise<string | null> {
+  private async validateStage(agent: string, project: string, structuredOutput?: unknown): Promise<string | null> {
     if (agent === 'architect' || agent.includes('architect')) {
       return this.validateArchitect(project);
     }
@@ -222,7 +240,7 @@ export class PipelineEngine {
       return this.validateBuilder(project);
     }
     if (agent === 'reviewer' || agent.includes('review')) {
-      return this.validateReviewer(project);
+      return this.validateReviewer(project, structuredOutput);
     }
     return null;
   }
@@ -243,7 +261,20 @@ export class PipelineEngine {
     return null;
   }
 
-  private async validateReviewer(project: string): Promise<string | null> {
+  private async validateReviewer(project: string, structuredOutput?: unknown): Promise<string | null> {
+    // If structured output is available, validate its shape
+    if (structuredOutput && typeof structuredOutput === 'object') {
+      const review = structuredOutput as Record<string, unknown>;
+      if (!review['verdict'] || !['APPROVE', 'REVISE', 'REDESIGN'].includes(String(review['verdict']))) {
+        return 'Reviewer structured output missing valid verdict field';
+      }
+      if (typeof review['score'] !== 'number' || review['score'] < 1 || review['score'] > 10) {
+        return 'Reviewer structured output has invalid score (must be 1-10)';
+      }
+      return null;
+    }
+
+    // Fallback: check REVIEW.md file (backwards compatibility)
     const reviewPath = join(project, '.brain', 'REVIEW.md');
     try {
       const content = await readFile(reviewPath, 'utf-8');
@@ -251,8 +282,7 @@ export class PipelineEngine {
         return 'Reviewer wrote REVIEW.md but missing a valid Verdict: line (APPROVE|REVISE|REDESIGN)';
       }
     } catch {
-      // No REVIEW.md — this will be enhanced in Task 7 with structured output
-      return null;
+      return 'Reviewer did not produce a review (no structured output and no .brain/REVIEW.md)';
     }
     return null;
   }
@@ -265,7 +295,7 @@ export class PipelineEngine {
     const prevAgent = stages[index - 1]?.agent ?? 'previous agent';
 
     if (agent === 'reviewer' || agent.includes('review')) {
-      return `Review the code changes made by ${prevAgent} for the following task: ${originalTask}\n\nRun the tests, check code quality, and write your review to .brain/REVIEW.md with a score (1-10) and verdict (APPROVE, REVISE, or REDESIGN).`;
+      return `Review the code written by ${prevAgent} for the following task. Follow the review-loop and review-code skills. Read .brain/PLAN.md to understand what was supposed to be built, then review the actual code. Read .brain/PATTERNS.md and verify the code follows established patterns. Run tests/build. Your final response will be captured as structured JSON. As a backup, also write your verdict to .brain/REVIEW.md with a "Verdict: APPROVE", "Verdict: REVISE", or "Verdict: REDESIGN" line.\n\nTask: ${originalTask}`;
     }
 
     if (agent === 'builder' || agent.includes('build')) {

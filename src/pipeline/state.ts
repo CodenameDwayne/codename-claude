@@ -43,6 +43,41 @@ export async function writePipelineState(projectDir: string, state: PipelineStat
   await writeFile(path, JSON.stringify(state, null, 2));
 }
 
+export interface ReviewOutput {
+  verdict: 'APPROVE' | 'REVISE' | 'REDESIGN';
+  score: number;
+  summary: string;
+  issues: Array<{
+    severity: 'major' | 'minor' | 'nit';
+    description: string;
+    file?: string;
+  }>;
+  patternsCompliance: boolean;
+}
+
+export const REVIEW_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['APPROVE', 'REVISE', 'REDESIGN'] },
+    score: { type: 'number', minimum: 1, maximum: 10 },
+    summary: { type: 'string' },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['major', 'minor', 'nit'] },
+          description: { type: 'string' },
+          file: { type: 'string' },
+        },
+        required: ['severity', 'description'],
+      },
+    },
+    patternsCompliance: { type: 'boolean' },
+  },
+  required: ['verdict', 'score', 'summary', 'issues', 'patternsCompliance'],
+} as const;
+
 export async function updateStageStatus(
   projectDir: string,
   stageIndex: number,

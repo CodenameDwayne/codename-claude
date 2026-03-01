@@ -4,7 +4,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { readPipelineState } from '../pipeline/state.js';
+import { readPipelineState, REVIEW_JSON_SCHEMA } from '../pipeline/state.js';
 
 // Resolve the native claude binary path once at module load time.
 // Important: `npx tsx` prepends node_modules/.bin to PATH, which may contain
@@ -77,6 +77,7 @@ export interface RunResult {
   mode: 'standalone' | 'team';
   syncedFiles?: string[];
   sessionId?: string;
+  structuredOutput?: unknown;
 }
 
 export interface RunOptions {
@@ -280,7 +281,9 @@ export async function runAgent(
   const claudePath = findClaudeExecutable();
   log(`[runner] Using claude at: ${claudePath}`);
 
+  const isReviewer = role === 'reviewer' || role.includes('review');
   let sessionId: string | undefined;
+  let structuredOutput: unknown | undefined;
 
   for await (const message of query({
     prompt: task,
@@ -301,6 +304,12 @@ export async function runAgent(
           autoAllowBashIfSandboxed: true,
         },
       }),
+      ...(isReviewer && {
+        outputFormat: {
+          type: 'json_schema' as const,
+          schema: REVIEW_JSON_SCHEMA as Record<string, unknown>,
+        },
+      }),
       stderr: (data: string) => process.stderr.write(`[stderr] ${data}`),
     },
   })) {
@@ -309,6 +318,14 @@ export async function runAgent(
     // Capture session_id from the first message that has one
     if (!sessionId && typeof msg['session_id'] === 'string') {
       sessionId = msg['session_id'];
+    }
+
+    // Capture structured_output from result message
+    if (msg['type'] === 'result' && msg['subtype'] === 'success') {
+      const resultMsg = msg as Record<string, unknown>;
+      if (resultMsg['structured_output'] !== undefined) {
+        structuredOutput = resultMsg['structured_output'];
+      }
     }
 
     if (msg['type'] === 'assistant' && msg['message']) {
@@ -335,5 +352,6 @@ export async function runAgent(
     sandboxed,
     mode,
     sessionId,
+    structuredOutput,
   };
 }
