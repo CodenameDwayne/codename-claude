@@ -12,7 +12,6 @@ export interface AgentSummary {
 export interface PipelineStage {
   agent: string;
   teams: boolean;
-  batchScope?: string;
 }
 
 export interface RouteOptions {
