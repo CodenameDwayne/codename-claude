@@ -8,7 +8,7 @@
  * 2. Team mode passes through correctly
  * 3. Heartbeat passes mode through to pipeline
  * 4. Webhook server enqueues work correctly
- * 5. Pipeline result stagesRun drives prompt estimation
+ * 5. Pipeline result totalTurnCount drives prompt usage recording
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHmac } from 'node:crypto';
@@ -44,7 +44,7 @@ describe('Pipeline: webhook → queue → heartbeat → runner', () => {
 
     const runPipeline = vi.fn(async (project: string, task: string, mode: 'standalone' | 'team', agent?: string): Promise<PipelineResult> => {
       pipelineCalls.push({ project, task, mode, agent });
-      return { completed: true, stagesRun: 3, retries: 0 };
+      return { completed: true, stagesRun: 3, teamStagesRun: 0, retries: 0, totalTurnCount: 15 };
     });
 
     // 1. Start webhook server that enqueues to our queue
@@ -149,7 +149,7 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
     const pipelineCalls: Array<{ agent?: string; mode: string }> = [];
     const runPipeline = vi.fn(async (_project: string, _task: string, mode: 'standalone' | 'team', agent?: string): Promise<PipelineResult> => {
       pipelineCalls.push({ agent, mode });
-      return { completed: true, stagesRun: 3, retries: 0 };
+      return { completed: true, stagesRun: 3, teamStagesRun: 0, retries: 0, totalTurnCount: 15 };
     });
 
     const trigger = new CronTrigger({
@@ -184,7 +184,7 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
     const pipelineCalls: Array<{ mode: string }> = [];
     const runPipeline = vi.fn(async (_project: string, _task: string, mode: 'standalone' | 'team'): Promise<PipelineResult> => {
       pipelineCalls.push({ mode });
-      return { completed: true, stagesRun: 1, retries: 0 };
+      return { completed: true, stagesRun: 1, teamStagesRun: 0, retries: 0, totalTurnCount: 5 };
     });
 
     const trigger = new CronTrigger({
@@ -217,9 +217,9 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
     const usageRecords: number[] = [];
     const recordUsage = vi.fn(async (count: number) => { usageRecords.push(count); });
 
-    // Multi-stage pipeline (team trigger — returns stagesRun: 3)
+    // Multi-stage pipeline (team trigger — returns totalTurnCount: 30)
     const multiStagePipeline = vi.fn(async (): Promise<PipelineResult> => {
-      return { completed: true, stagesRun: 3, retries: 0 };
+      return { completed: true, stagesRun: 3, teamStagesRun: 0, retries: 0, totalTurnCount: 30 };
     });
 
     const teamTrigger = new CronTrigger({
@@ -245,9 +245,9 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
     const teamLoop = new HeartbeatLoop(teamDeps);
     await teamLoop.tick();
 
-    // Single-stage pipeline (standalone — returns stagesRun: 1)
+    // Single-stage pipeline (standalone — returns totalTurnCount: 5)
     const singleStagePipeline = vi.fn(async (): Promise<PipelineResult> => {
-      return { completed: true, stagesRun: 1, retries: 0 };
+      return { completed: true, stagesRun: 1, teamStagesRun: 0, retries: 0, totalTurnCount: 5 };
     });
 
     const standaloneTrigger = new CronTrigger({
@@ -273,7 +273,7 @@ describe('Pipeline: cron trigger → heartbeat → runner with mode', () => {
     const standaloneLoop = new HeartbeatLoop(standaloneDeps);
     await standaloneLoop.tick();
 
-    // Multi-stage should record more prompts (3 * 10 = 30 vs 1 * 10 = 10)
+    // Multi-stage should record more prompts (totalTurnCount: 30 vs 5)
     expect(usageRecords[0]).toBeGreaterThan(usageRecords[1]!);
   });
 });
@@ -284,7 +284,7 @@ describe('Pipeline: budget-low queuing preserves mode', () => {
     const pipelineCalls: Array<{ mode: string }> = [];
     const runPipeline = vi.fn(async (_project: string, _task: string, mode: 'standalone' | 'team'): Promise<PipelineResult> => {
       pipelineCalls.push({ mode });
-      return { completed: true, stagesRun: 1, retries: 0 };
+      return { completed: true, stagesRun: 1, teamStagesRun: 0, retries: 0, totalTurnCount: 5 };
     });
 
     const trigger = new CronTrigger({

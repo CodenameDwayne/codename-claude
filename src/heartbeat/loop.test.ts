@@ -29,7 +29,7 @@ function makeDeps(overrides: Partial<HeartbeatDeps> = {}): HeartbeatDeps {
     queue: new WorkQueue(QUEUE_FILE),
     canRunAgent: async () => true,
     recordUsage: async () => {},
-    runPipeline: async () => ({ completed: true, stagesRun: 1, retries: 0 }),
+    runPipeline: async () => ({ completed: true, stagesRun: 1, teamStagesRun: 0, retries: 0, totalTurnCount: 5 }),
     log: () => {},
     ...overrides,
   };
@@ -57,7 +57,7 @@ describe('HeartbeatLoop', () => {
   });
 
   test('tick fires a due trigger and runs the pipeline', async () => {
-    const runPipeline = vi.fn(async () => ({ completed: true, stagesRun: 1, retries: 0 }));
+    const runPipeline = vi.fn(async () => ({ completed: true, stagesRun: 1, teamStagesRun: 0, retries: 0, totalTurnCount: 5 }));
     const trigger = makeTrigger();
 
     // Set time to a minute boundary so the trigger is due
@@ -90,7 +90,7 @@ describe('HeartbeatLoop', () => {
   });
 
   test('tick processes queued work when budget available', async () => {
-    const runPipeline = vi.fn(async () => ({ completed: true, stagesRun: 1, retries: 0 }));
+    const runPipeline = vi.fn(async () => ({ completed: true, stagesRun: 1, teamStagesRun: 0, retries: 0, totalTurnCount: 5 }));
     const queue = new WorkQueue(QUEUE_FILE);
     await queue.enqueue({
       triggerName: 'queued-trigger',
@@ -119,7 +119,7 @@ describe('HeartbeatLoop', () => {
 
     const runPipeline = vi.fn(async () => {
       await agentPromise;
-      return { completed: true, stagesRun: 1, retries: 0 };
+      return { completed: true, stagesRun: 1, teamStagesRun: 0, retries: 0, totalTurnCount: 5 };
     });
 
     const trigger = makeTrigger();
@@ -140,16 +140,18 @@ describe('HeartbeatLoop', () => {
     await tick1;
   });
 
-  test('tick records usage after agent run', async () => {
+  test('tick records usage with real turn count after agent run', async () => {
     const recordUsage = vi.fn(async () => {});
+    const runPipeline = vi.fn(async () => ({ completed: true, stagesRun: 2, teamStagesRun: 0, retries: 0, totalTurnCount: 12 }));
     const trigger = makeTrigger();
     vi.setSystemTime(new Date('2026-02-27T10:01:00.000'));
 
-    const deps = makeDeps({ triggers: [trigger], recordUsage });
+    const deps = makeDeps({ triggers: [trigger], recordUsage, runPipeline });
     const loop = new HeartbeatLoop(deps);
 
     await loop.tick();
     expect(recordUsage).toHaveBeenCalledOnce();
+    expect(recordUsage).toHaveBeenCalledWith(12);
   });
 
   test('tick handles agent errors gracefully', async () => {

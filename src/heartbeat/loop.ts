@@ -24,9 +24,6 @@ interface HeartbeatOptions {
   intervalMs?: number;
 }
 
-const STANDALONE_PROMPT_ESTIMATE = 10;
-const TEAM_PROMPT_ESTIMATE = 50;
-
 export class HeartbeatLoop {
   private deps: HeartbeatDeps;
   private intervalMs: number;
@@ -142,10 +139,8 @@ export class HeartbeatLoop {
     try {
       const result = await this.deps.runPipeline(project, task, mode, agent);
       trigger?.markFired();
-      const standaloneStages = result.stagesRun - (result.teamStagesRun ?? 0);
-      const teamStages = result.teamStagesRun ?? 0;
-      const promptEstimate = (standaloneStages * STANDALONE_PROMPT_ESTIMATE) + (teamStages * TEAM_PROMPT_ESTIMATE);
-      await this.deps.recordUsage(promptEstimate);
+      const promptCount = result.totalTurnCount || 1;
+      await this.deps.recordUsage(promptCount);
       return { action: 'ran_agent', triggerName, source };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

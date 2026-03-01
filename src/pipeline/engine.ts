@@ -36,6 +36,7 @@ export interface PipelineResult {
   stagesRun: number;
   teamStagesRun: number;
   retries: number;
+  totalTurnCount: number;
   finalVerdict?: string;
   sessionIds?: Record<string, string>;
   review?: ReviewOutput;
@@ -86,6 +87,7 @@ export class PipelineEngine {
     let i = 0;
     let stagesRun = 0;
     let teamStagesRun = 0;
+    let totalTurnCount = 0;
 
     while (i < stages.length) {
       const stage = stages[i]!;
@@ -112,6 +114,7 @@ export class PipelineEngine {
       });
 
       stagesRun++;
+      totalTurnCount += result.turnCount ?? 0;
       if (stage.teams) {
         teamStagesRun++;
       }
@@ -141,7 +144,7 @@ export class PipelineEngine {
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
         const totalRetriesOnFail = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
-        return { completed: false, stagesRun, teamStagesRun, retries: totalRetriesOnFail, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds, review: lastReviewOutput };
+        return { completed: false, stagesRun, teamStagesRun, retries: totalRetriesOnFail, totalTurnCount, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds, review: lastReviewOutput };
       }
 
       pipelineState.stages[i]!.status = 'completed';
@@ -216,7 +219,7 @@ export class PipelineEngine {
           pipelineState.retries = totalRetries;
           pipelineState.updatedAt = Date.now();
           await writePipelineState(project, pipelineState);
-          return { completed: false, stagesRun, teamStagesRun, retries: totalRetries, finalVerdict: verdict, sessionIds, review: lastReviewOutput };
+          return { completed: false, stagesRun, teamStagesRun, retries: totalRetries, totalTurnCount, finalVerdict: verdict, sessionIds, review: lastReviewOutput };
         }
 
         batchRetries.set(retryKey, keyRetries + 1);
@@ -287,7 +290,7 @@ export class PipelineEngine {
     pipelineState.updatedAt = Date.now();
     await writePipelineState(project, pipelineState);
 
-    return { completed: true, stagesRun, teamStagesRun, retries: finalTotalRetries, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
+    return { completed: true, stagesRun, teamStagesRun, retries: finalTotalRetries, totalTurnCount, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
   }
 
   private async ensureProjectContext(project: string, task: string): Promise<void> {
