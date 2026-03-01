@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PipelineStage } from './router.js';
 import { writePipelineState, type PipelineState, type ReviewOutput } from './state.js';
+import { parsePlanTasks, expandStagesWithBatches } from './orchestrator.js';
 
 export interface RunnerResult {
   agentName: string;
@@ -56,7 +57,8 @@ export class PipelineEngine {
   }
 
   async run(options: PipelineRunOptions): Promise<PipelineResult> {
-    const { stages, project, task } = options;
+    const { project, task } = options;
+    let stages = [...options.stages];
 
     // Ensure .brain/PROJECT.md exists for first-run bootstrap
     await this.ensureProjectContext(project, task);
@@ -76,7 +78,7 @@ export class PipelineEngine {
       currentStage: 0,
       startedAt: now,
       updatedAt: now,
-      stages: stages.map(s => ({ agent: s.agent, status: 'pending' as const })),
+      stages: stages.map(s => ({ agent: s.agent, status: 'pending' as const, batchScope: s.batchScope })),
       retries: 0,
     };
     await writePipelineState(project, pipelineState);
@@ -138,6 +140,35 @@ export class PipelineEngine {
       await writePipelineState(project, pipelineState);
 
       this.config.log(`[pipeline] Stage ${i + 1}/${stages.length}: ${stage.agent} passed validation`);
+
+      // Orchestrate: after architect completes, read PLAN.md and expand batches
+      if (stage.agent === 'architect' || stage.agent.includes('architect')) {
+        try {
+          const planPath = join(project, '.brain', 'PLAN.md');
+          const planContent = await readFile(planPath, 'utf-8');
+          const tasks = parsePlanTasks(planContent);
+
+          if (tasks.length > 0) {
+            this.config.log(`[pipeline] Orchestrator: found ${tasks.length} tasks in PLAN.md, expanding into batches`);
+            const expanded = expandStagesWithBatches(stages, tasks.length, 'builder');
+            stages = expanded;
+
+            // Rebuild pipeline state for new stages
+            pipelineState.pipeline = stages.map(s => s.agent);
+            pipelineState.stages = stages.map((s, idx) => {
+              if (idx <= i) {
+                return pipelineState.stages[idx] ?? { agent: s.agent, status: 'completed' as const };
+              }
+              return { agent: s.agent, status: 'pending' as const, batchScope: s.batchScope };
+            });
+            pipelineState.updatedAt = Date.now();
+            await writePipelineState(project, pipelineState);
+          }
+        } catch {
+          // No PLAN.md or read error — continue without orchestration
+          this.config.log(`[pipeline] Orchestrator: no PLAN.md found, skipping batch expansion`);
+        }
+      }
 
       // Check review verdict after reviewer stages
       if (stage.agent === 'reviewer' || stage.agent.includes('review')) {
@@ -315,11 +346,19 @@ export class PipelineEngine {
     const prevAgent = stages[index - 1]?.agent ?? 'previous agent';
 
     if (agent === 'reviewer' || agent.includes('review')) {
-      return `Review the code written by ${prevAgent} for the following task. Follow the review-loop and review-code skills. Read .brain/PLAN.md to understand what was supposed to be built, then review the actual code. Read .brain/PATTERNS.md and verify the code follows established patterns. Run tests/build. Your final response will be captured as structured JSON. As a backup, also write your verdict to .brain/REVIEW.md with a "Verdict: APPROVE", "Verdict: REVISE", or "Verdict: REDESIGN" line.\n\nTask: ${originalTask}`;
+      const scope = stages[index]?.batchScope;
+      const scopeInstruction = scope
+        ? `\n\nIMPORTANT: You are reviewing ${scope} only. Focus your review on the code implementing those specific tasks.`
+        : '';
+      return `Review the code written by ${prevAgent} for the following task. Follow the review-loop and review-code skills. Read .brain/PLAN.md to understand what was supposed to be built, then review the actual code. Read .brain/PATTERNS.md and verify the code follows established patterns. Run tests/build. Your final response will be captured as structured JSON. As a backup, also write your verdict to .brain/REVIEW.md with a "Verdict: APPROVE", "Verdict: REVISE", or "Verdict: REDESIGN" line.${scopeInstruction}\n\nTask: ${originalTask}`;
     }
 
     if (agent === 'builder' || agent.includes('build')) {
-      return `Implement the following task. Start by reading .brain/PLAN.md — this is your implementation spec from Architect. It contains the architecture, directory structure, ordered tasks, and acceptance criteria. Also read .brain/DECISIONS.md for architectural decisions. Follow the plan step by step. Set up the project from scratch if needed (git init, bun init, bun install, create directories), write all source code, and ensure it builds and runs. Always use bun, not npm.\n\nTask: ${originalTask}`;
+      const scope = stages[index]?.batchScope;
+      const scopeInstruction = scope
+        ? `\n\nIMPORTANT: You are working on ${scope} only. Read PLAN.md and implement ONLY those tasks. Do not implement tasks outside your batch scope.`
+        : '';
+      return `Implement the following task. Start by reading .brain/PLAN.md — this is your implementation spec from Architect. It contains the architecture, directory structure, ordered tasks, and acceptance criteria. Also read .brain/DECISIONS.md for architectural decisions. Follow the plan step by step. Set up the project from scratch if needed (git init, bun init, bun install, create directories), write all source code, and ensure it builds and runs. Always use bun, not npm.${scopeInstruction}\n\nTask: ${originalTask}`;
     }
 
     if (agent === 'architect' || agent.includes('architect')) {

@@ -8,6 +8,7 @@ export interface StageState {
   completedAt?: number;
   sessionId?: string;
   validation?: 'passed' | string;
+  batchScope?: string;
 }
 
 export interface PipelineState {

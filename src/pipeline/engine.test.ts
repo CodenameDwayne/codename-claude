@@ -357,3 +357,207 @@ describe('PipelineEngine PROJECT.md bootstrap', () => {
     expect(content).not.toContain('Add authentication');
   });
 });
+
+describe('PipelineEngine orchestration', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('expands builder+reviewer into batches after architect writes PLAN.md', async () => {
+    const planContent = `# Plan
+
+### Task 1: Set up project
+Details...
+
+### Task 2: Create models
+Details...
+
+### Task 3: Add API routes
+Details...
+
+### Task 4: Add auth
+Details...
+
+### Task 5: Add tests
+Details...
+`;
+
+    const callLog: string[] = [];
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      callLog.push(role);
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), planContent);
+      }
+      if (role === 'reviewer') {
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: 'APPROVE',
+            score: 9,
+            summary: 'Good',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build a web app',
+    });
+
+    expect(result.completed).toBe(true);
+
+    // Should have expanded: architect, builder(1-3), reviewer(1-3), builder(4-5), reviewer(4-5)
+    // = 5 total agent calls: architect + 2 builders + 2 reviewers
+    expect(callLog).toEqual(['architect', 'builder', 'reviewer', 'builder', 'reviewer']);
+    expect(logs.some(l => l.includes('Orchestrator: found 5 tasks'))).toBe(true);
+  });
+
+  test('passes batch scope in builder/reviewer task prompts', async () => {
+    const planContent = `# Plan
+### Task 1: Do thing A
+### Task 2: Do thing B
+### Task 3: Do thing C
+### Task 4: Do thing D
+`;
+
+    const taskArgs: string[] = [];
+    const runner: PipelineRunnerFn = vi.fn(async (role: string, _project: string, task: string) => {
+      taskArgs.push(task);
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), planContent);
+      }
+      if (role === 'reviewer') {
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: 'APPROVE',
+            score: 9,
+            summary: 'Good',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build app',
+    });
+
+    // taskArgs[1] = first builder call, should mention Tasks 1-3
+    expect(taskArgs[1]).toContain('Tasks 1-3');
+    // taskArgs[2] = first reviewer call, should mention Tasks 1-3
+    expect(taskArgs[2]).toContain('Tasks 1-3');
+    // taskArgs[3] = second builder call, should mention Task 4
+    expect(taskArgs[3]).toContain('Task 4');
+  });
+
+  test('skips orchestration when PLAN.md has no tasks', async () => {
+    const callLog: string[] = [];
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      callLog.push(role);
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), '# Plan\n\nJust architecture notes, no task headings.');
+      }
+      if (role === 'reviewer') {
+        await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    // No expansion — original 3 stages run as-is
+    expect(callLog).toEqual(['architect', 'builder', 'reviewer']);
+  });
+
+  test('pipeline-state.json includes batchScope for expanded stages', async () => {
+    const planContent = `# Plan
+### Task 1: First
+### Task 2: Second
+### Task 3: Third
+### Task 4: Fourth
+`;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), planContent);
+      }
+      if (role === 'reviewer') {
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: 'APPROVE',
+            score: 9,
+            summary: 'Good',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build app',
+    });
+
+    const state = await readPipelineState(TEST_PROJECT);
+    expect(state).not.toBeNull();
+
+    // After expansion: architect, builder(1-3), reviewer(1-3), builder(4), reviewer(4)
+    const builderStages = state!.stages.filter(s => s.agent === 'builder');
+    expect(builderStages).toHaveLength(2);
+    expect(builderStages[0]!.batchScope).toBe('Tasks 1-3');
+    expect(builderStages[1]!.batchScope).toBe('Task 4');
+  });
+});

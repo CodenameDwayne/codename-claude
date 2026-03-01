@@ -14,6 +14,7 @@ export interface AgentSummary {
 export interface PipelineStage {
   agent: string;
   teams: boolean;
+  batchScope?: string;
 }
 
 // Type for the Anthropic messages.create function (allows DI for testing)
