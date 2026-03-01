@@ -146,6 +146,7 @@ function parseAgentDefinition(raw: string): AgentDefinition {
 async function buildSystemPrompt(
   agent: AgentDefinition,
   projectPath: string,
+  mode: 'standalone' | 'team' = 'standalone',
 ): Promise<string> {
   const sections: string[] = [];
 
@@ -172,6 +173,12 @@ async function buildSystemPrompt(
     sections.push(`---\n\n# Your Role\n\n${agent.systemPromptSection}`);
   }
 
+  // 4b. Team mode override — injected into system prompt so it takes priority
+  const isArchitect = agent.frontmatter.name.toLowerCase().includes('architect');
+  if (mode === 'team' && isArchitect) {
+    sections.push(`---\n\n# MANDATORY: Team Mode Active\n\nYou are running in TEAM MODE. This is a non-negotiable hard constraint that overrides all other planning instructions.\n\n**You MUST use Agent Teams.** After reading context and writing DECISIONS.md + PLAN.md preamble, your VERY NEXT action MUST be calling TeamCreate to create the "architect-planning" team. Then spawn planning teammates via the Task tool. Follow the plan-feature-team skill EXACTLY.\n\n**You are FORBIDDEN from writing task sections (### Task N:) to PLAN.md directly.** Only teammates write tasks to PLAN-PART files. You merge them.\n\nIf you write PLAN.md task content without first calling TeamCreate, you have failed your mission. No exceptions, no rationalizations about plan size.`);
+  }
+
   // 5. Project context from .brain/
   const brainDir = join(projectPath, '.brain');
   const brainFiles = [
@@ -179,6 +186,7 @@ async function buildSystemPrompt(
     'DECISIONS.md',
     'PATTERNS.md',
     'MISTAKES.md',
+    'REVIEW.md',
   ];
 
   const brainSections: string[] = [];
@@ -267,7 +275,7 @@ export async function runAgent(
   const agent = parseAgentDefinition(agentRaw);
 
   // 2. Build system prompt
-  const systemPrompt = await buildSystemPrompt(agent, projectPath);
+  const systemPrompt = await buildSystemPrompt(agent, projectPath, mode);
 
   // 3. Prepare query options
   const model = mapModel(agent.frontmatter.model);
@@ -281,6 +289,7 @@ export async function runAgent(
   delete env['CLAUDECODE'];
 
   // Enable Agent Teams when running in team mode
+  const AGENT_TEAMS_TOOLS = ['TeamCreate', 'TeamDelete', 'SendMessage', 'Task', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'];
   if (mode === 'team') {
     env['CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS'] = '1';
     log('[runner] Agent Teams enabled via CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1');
@@ -289,7 +298,12 @@ export async function runAgent(
   // 6. Determine maxTurns — team sessions run longer
   const maxTurns = runOptions.maxTurns ?? (mode === 'team' ? 200 : 50);
 
-  // 7. Run agent via SDK
+  // 7. Build allowed tools list — add Agent Teams tools when in team mode
+  const allowedTools = mode === 'team'
+    ? [...new Set([...agent.frontmatter.tools, ...AGENT_TEAMS_TOOLS])]
+    : agent.frontmatter.tools;
+
+  // 8. Run agent via SDK
   const claudePath = findClaudeExecutable();
   log(`[runner] Using claude at: ${claudePath}`);
 
@@ -304,7 +318,7 @@ export async function runAgent(
       model,
       maxTurns,
       pathToClaudeCodeExecutable: claudePath,
-      allowedTools: agent.frontmatter.tools,
+      allowedTools,
       cwd: projectPath,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
