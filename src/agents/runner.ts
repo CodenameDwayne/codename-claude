@@ -4,6 +4,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { readPipelineState } from '../pipeline/state.js';
 
 // Resolve the native claude binary path once at module load time.
 // Important: `npx tsx` prepends node_modules/.bin to PATH, which may contain
@@ -197,6 +198,25 @@ async function buildSystemPrompt(
     sections.push(
       `---\n\n# Project Context (.brain/)\n\n${brainSections.join('\n\n')}`,
     );
+  }
+
+  // 6. Pipeline state (engine-managed)
+  const pipelineState = await readPipelineState(projectPath);
+  if (pipelineState) {
+    const completedStages = pipelineState.stages
+      .filter(s => s.status === 'completed')
+      .map(s => `- ${s.agent}: completed, validation ${s.validation ?? 'n/a'}`)
+      .join('\n');
+
+    const stateSection = [
+      `Pipeline: ${pipelineState.pipeline.join(' → ')}`,
+      `Status: ${pipelineState.status}`,
+      `Current Stage: ${pipelineState.currentStage + 1}/${pipelineState.pipeline.length}`,
+      `Retries: ${pipelineState.retries}`,
+      completedStages ? `\nCompleted stages:\n${completedStages}` : '',
+    ].filter(Boolean).join('\n');
+
+    sections.push(`---\n\n# Pipeline State\n\n${stateSection}`);
   }
 
   return sections.join('\n\n');
