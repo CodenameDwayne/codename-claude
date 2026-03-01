@@ -12,24 +12,30 @@ You: "Build a CLI bookmark manager in TypeScript"
             │  (Claude)      │
             └───────┬───────┘
                     │
-    ┌───────────────┼───────────────┐
-    ▼               ▼               ▼
-┌─────────┐   ┌─────────┐   ┌──────────┐
-│Architect │──▶│ Builder  │──▶│ Reviewer  │
-│ (Opus)   │   │(Sonnet)  │   │ (Sonnet)  │
-│          │   │          │   │           │
-│ Plans    │   │ Codes    │   │ Tests &   │
-│ Designs  │   │ Tests    │   │ Scores    │
-│ Specs    │   │ Commits  │   │ Routes    │
-└─────────┘   └─────────┘   └──────────┘
-                                  │
-                    ┌─────────────┤
-                    │             │
-                 APPROVE       REVISE ──▶ back to Builder
-                    │          REDESIGN ──▶ back to Architect
+            ┌───────▼───────┐
+            │   Architect   │  Plans, writes PLAN.md with
+            │   (Opus)      │  ### Task 1: ... ### Task N: ...
+            └───────┬───────┘
+                    │
+            ┌───────▼───────┐
+            │  Orchestrator │  Parses tasks, groups into
+            │               │  batches of 3
+            └───────┬───────┘
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+   Tasks 1-3    Tasks 4-6    Task 7
+   ┌────────┐   ┌────────┐   ┌────────┐
+   │Builder  │   │Builder  │   │Builder  │
+   │ ▼       │   │ ▼       │   │ ▼       │
+   │Reviewer │   │Reviewer │   │Reviewer │
+   └────────┘   └────────┘   └────────┘
+        │           │           │
+     APPROVE     APPROVE     APPROVE
+        │           │           │
+        └───────────┼───────────┘
                     ▼
               Code shipped.
-              58 tests passing.
 ```
 
 The daemon runs in the background, consuming zero tokens when idle. When a task arrives — via CLI, cron schedule, GitHub webhook, or file change — it fires the pipeline and agents work autonomously.
@@ -124,10 +130,25 @@ Builder → Reviewer
 
 **Complex** (needs planning):
 ```
-Architect → Builder → Reviewer
+Architect → Orchestrator → Builder(batch 1) → Reviewer(batch 1) → ... → Builder(batch N) → Reviewer(batch N)
 ```
 
 Scout is invoked on-demand by Architect when research is needed, not as a fixed pipeline stage.
+
+### Batch Orchestration
+
+After the Architect writes `PLAN.md` with `### Task N:` headings, the Orchestrator automatically:
+
+1. Parses task headings from the plan
+2. Groups tasks into batches of 3
+3. Expands the single `[Builder, Reviewer]` pair into scoped batch pairs
+
+For example, a plan with 7 tasks becomes:
+```
+Architect → Builder(Tasks 1-3) → Reviewer(Tasks 1-3) → Builder(Tasks 4-6) → Reviewer(Tasks 4-6) → Builder(Task 7) → Reviewer(Task 7)
+```
+
+Each Builder/Reviewer receives scoped instructions limiting them to their batch. REVISE loops re-run only the affected batch. If `PLAN.md` has no task headings, the pipeline runs as a single stage (backward compatible).
 
 ### Review Loop
 
@@ -223,7 +244,8 @@ src/
 │   ├── runner.ts          Spawns agent sessions via SDK
 │   └── sandbox.ts         Vercel Sandbox integration
 ├── pipeline/
-│   ├── engine.ts          Pipeline orchestrator
+│   ├── engine.ts          Pipeline engine (runs stages, review loops)
+│   ├── orchestrator.ts    Batch expansion (parses PLAN.md, groups tasks)
 │   ├── router.ts          LLM task router (Haiku)
 │   └── state.ts           Pipeline state persistence
 ├── heartbeat/
