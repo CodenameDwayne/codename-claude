@@ -49,7 +49,7 @@ export interface ReviewOutput {
   score: number;
   summary: string;
   issues: Array<{
-    severity: 'major' | 'minor' | 'nit';
+    severity: 'critical' | 'major' | 'minor' | 'nit';
     description: string;
     file?: string;
   }>;
@@ -67,7 +67,7 @@ export const REVIEW_JSON_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          severity: { type: 'string', enum: ['major', 'minor', 'nit'] },
+          severity: { type: 'string', enum: ['critical', 'major', 'minor', 'nit'] },
           description: { type: 'string' },
           file: { type: 'string' },
         },

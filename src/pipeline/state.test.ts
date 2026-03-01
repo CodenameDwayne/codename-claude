@@ -6,6 +6,7 @@ import {
   readPipelineState,
   writePipelineState,
   updateStageStatus,
+  REVIEW_JSON_SCHEMA,
 } from './state.js';
 
 const TEST_DIR = join(import.meta.dirname, '../../.test-state/pipeline-state-test');
@@ -49,6 +50,11 @@ describe('PipelineState', () => {
     expect(read!.project).toBe(TEST_DIR);
     expect(read!.pipeline).toEqual(['architect', 'builder', 'reviewer']);
     expect(read!.stages).toHaveLength(3);
+  });
+
+  test('REVIEW_JSON_SCHEMA includes critical severity', () => {
+    const severityEnum = (REVIEW_JSON_SCHEMA.properties.issues.items.properties.severity as any).enum;
+    expect(severityEnum).toContain('critical');
   });
 
   test('updateStageStatus updates a specific stage and bumps updatedAt', async () => {
