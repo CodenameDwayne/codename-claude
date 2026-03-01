@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { writeFile, readFile, mkdir, rm, readdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { PipelineEngine, type PipelineRunnerFn } from './engine.js';
 import { readPipelineState } from './state.js';
@@ -562,6 +563,91 @@ Details...
     expect(builderStages).toHaveLength(2);
     expect(builderStages[0]!.batchScope).toBe('Tasks 1-3');
     expect(builderStages[1]!.batchScope).toBe('Task 4');
+  });
+});
+
+describe('PipelineEngine validateBuilder', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+    // Init a git repo in the test project so git commands work
+    execFileSync('git', ['init'], { cwd: TEST_PROJECT });
+    execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: TEST_PROJECT });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: TEST_PROJECT });
+    // Pre-create PROJECT.md so ensureProjectContext doesn't add an untracked file
+    await writeFile(join(BRAIN_DIR, 'PROJECT.md'), '# Project\n\nBootstrapped context with enough content to exceed the threshold check.');
+    await writeFile(join(TEST_PROJECT, 'initial.txt'), 'init');
+    execFileSync('git', ['add', '.'], { cwd: TEST_PROJECT });
+    execFileSync('git', ['commit', '-m', 'init'], { cwd: TEST_PROJECT });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('fails validation when builder changes no files', async () => {
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      // Builder runs but does NOT modify any files
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [{ agent: 'builder', teams: false }],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(false);
+    expect(result.finalVerdict).toContain('VALIDATION_FAILED');
+    expect(result.finalVerdict).toContain('did not modify');
+  });
+
+  test('passes validation when builder creates new files', async () => {
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'builder') {
+        await writeFile(join(TEST_PROJECT, 'new-file.ts'), 'console.log("hello")');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [{ agent: 'builder', teams: false }],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(true);
+  });
+
+  test('fails validation when tests do not pass', async () => {
+    // Write a package.json with a test script that will fail
+    await writeFile(join(TEST_PROJECT, 'package.json'), JSON.stringify({
+      scripts: { test: 'exit 1' },
+    }));
+    execFileSync('git', ['add', '.'], { cwd: TEST_PROJECT });
+    execFileSync('git', ['commit', '-m', 'add pkg'], { cwd: TEST_PROJECT });
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'builder') {
+        // Create a new file so diff check passes
+        await writeFile(join(TEST_PROJECT, 'src.ts'), 'export const x = 1;');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [{ agent: 'builder', teams: false }],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(false);
+    expect(result.finalVerdict).toContain('tests did not pass');
   });
 });
 

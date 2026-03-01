@@ -337,8 +337,47 @@ export class PipelineEngine {
     return null;
   }
 
-  private async validateBuilder(_project: string): Promise<string | null> {
-    // Builder validation is implicit — if the runner completed without error, the build succeeded
+  private async validateBuilder(project: string): Promise<string | null> {
+    // 1. Check for file changes via git (exclude .brain/ pipeline metadata)
+    try {
+      // Only run git checks if the project is a git repo root
+      await readdir(join(project, '.git'));
+      const { execFileSync } = await import('node:child_process');
+      const diff = execFileSync('git', ['diff', '--name-only', 'HEAD', '--', '.', ':!.brain'], {
+        cwd: project, encoding: 'utf-8', timeout: 10_000,
+      }).trim();
+      const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+        cwd: project, encoding: 'utf-8', timeout: 10_000,
+      }).trim();
+      // Filter out .brain/ from untracked files
+      const untrackedNonBrain = untracked
+        .split('\n')
+        .filter(f => f && !f.startsWith('.brain/'))
+        .join('\n');
+      if (!diff && !untrackedNonBrain) {
+        return 'Builder did not modify any files (no git diff, no new files)';
+      }
+    } catch {
+      // Not a git repo or git not available — skip diff check
+    }
+
+    // 2. Run test suite if available
+    try {
+      const pkgRaw = await readFile(join(project, 'package.json'), 'utf-8');
+      const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
+      if (pkg.scripts?.['test']) {
+        const { execFileSync } = await import('node:child_process');
+        execFileSync('bun', ['run', 'test'], {
+          cwd: project, encoding: 'utf-8', timeout: 120_000, stdio: 'pipe',
+        });
+      }
+    } catch (err) {
+      if (err && typeof err === 'object' && 'status' in err && err.status !== null) {
+        return 'Builder validation failed: tests did not pass';
+      }
+      // No package.json or no test script — skip test check
+    }
+
     return null;
   }
 
