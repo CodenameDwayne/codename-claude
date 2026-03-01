@@ -61,6 +61,10 @@ export class PipelineEngine {
     const { project, task } = options;
     let stages = [...options.stages];
 
+    if (stages.length === 0) {
+      throw new Error('Pipeline received empty stages array — router returned no stages');
+    }
+
     // Ensure .brain/PROJECT.md exists for first-run bootstrap
     await this.ensureProjectContext(project, task);
 

@@ -60,6 +60,15 @@ describe('PipelineEngine', () => {
 
     expect(runner).toHaveBeenCalledWith('builder', TEST_PROJECT, expect.any(String), expect.objectContaining({ mode: 'team' }));
   });
+
+  test('throws when stages array is empty', async () => {
+    const runner = makeRunner();
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await expect(
+      engine.run({ stages: [], project: TEST_PROJECT, task: 'build something' }),
+    ).rejects.toThrow('Pipeline received empty stages array');
+  });
 });
 
 describe('PipelineEngine review loop', () => {
