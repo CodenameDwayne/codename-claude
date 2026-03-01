@@ -224,6 +224,26 @@ export class PipelineEngine {
         retries++;
         pipelineState.retries = retries;
 
+        // Write review feedback to .brain/REVIEW.md so retrying agents can read it
+        if (lastReviewOutput) {
+          const reviewMd = [
+            `# Review Feedback (Retry ${retries})`,
+            '',
+            `**Verdict:** ${lastReviewOutput.verdict}`,
+            `**Score:** ${lastReviewOutput.score}/10`,
+            `**Summary:** ${lastReviewOutput.summary}`,
+            '',
+            '## Issues to Fix',
+            '',
+            ...lastReviewOutput.issues.map(
+              (issue, idx) => `${idx + 1}. **[${issue.severity}]** ${issue.description}${issue.file ? ` (${issue.file})` : ''}`
+            ),
+          ].join('\n');
+          await mkdir(join(project, '.brain'), { recursive: true });
+          await writeFile(join(project, '.brain', 'REVIEW.md'), reviewMd);
+          this.config.log(`[pipeline] Wrote review feedback to .brain/REVIEW.md for retry`);
+        }
+
         if (verdict === 'REDESIGN') {
           const architectIdx = stages.findIndex(s => s.agent === 'architect' || s.agent.includes('architect'));
           const restartIdx = architectIdx >= 0 ? architectIdx : 0;

@@ -1063,3 +1063,112 @@ Details...
     expect(result.teamStagesRun).toBe(0);
   });
 });
+
+describe('PipelineEngine review feedback file', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('writes REVIEW.md with structured feedback on REVISE', async () => {
+    let reviewCount = 0;
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'reviewer') {
+        reviewCount++;
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: reviewCount === 1 ? 'REVISE' : 'APPROVE',
+            score: reviewCount === 1 ? 4 : 9,
+            summary: reviewCount === 1 ? 'Needs major fixes' : 'All good',
+            issues: reviewCount === 1
+              ? [
+                  { severity: 'major', description: 'Missing error handling', file: 'src/api.ts' },
+                  { severity: 'minor', description: 'Unused import' },
+                ]
+              : [],
+            patternsCompliance: reviewCount !== 1,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(true);
+    expect(result.retries).toBe(1);
+
+    // After the first REVISE, REVIEW.md should have been written with feedback
+    const reviewContent = await readFile(join(BRAIN_DIR, 'REVIEW.md'), 'utf-8');
+    expect(reviewContent).toContain('REVISE');
+    expect(reviewContent).toContain('4/10');
+    expect(reviewContent).toContain('Missing error handling');
+    expect(reviewContent).toContain('src/api.ts');
+    expect(reviewContent).toContain('Unused import');
+    expect(logs.some(l => l.includes('Wrote review feedback to .brain/REVIEW.md'))).toBe(true);
+  });
+
+  test('writes REVIEW.md with structured feedback on REDESIGN', async () => {
+    let reviewCount = 0;
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), '# Plan\n\n### Task 1: Do something\nDetails...\n');
+      }
+      if (role === 'reviewer') {
+        reviewCount++;
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: reviewCount === 1 ? 'REDESIGN' : 'APPROVE',
+            score: reviewCount === 1 ? 2 : 9,
+            summary: reviewCount === 1 ? 'Architecture is flawed' : 'Good',
+            issues: reviewCount === 1
+              ? [{ severity: 'major', description: 'Wrong database choice' }]
+              : [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(true);
+
+    // REVIEW.md should contain the REDESIGN feedback
+    const reviewContent = await readFile(join(BRAIN_DIR, 'REVIEW.md'), 'utf-8');
+    expect(reviewContent).toContain('REDESIGN');
+    expect(reviewContent).toContain('Wrong database choice');
+    expect(logs.some(l => l.includes('Wrote review feedback to .brain/REVIEW.md'))).toBe(true);
+  });
+});
