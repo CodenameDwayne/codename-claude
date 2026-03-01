@@ -227,6 +227,20 @@ describe('HeartbeatLoop', () => {
     await rm(projectDir, { recursive: true, force: true });
   });
 
+  test('runs initial tick immediately on start', async () => {
+    vi.useRealTimers();
+    const deps = makeDeps();
+    const loop = new HeartbeatLoop(deps, { intervalMs: 60_000 });
+
+    loop.start();
+
+    // Wait a small amount for the initial tick to fire
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    expect(loop.getTickCount()).toBeGreaterThanOrEqual(1);
+    loop.stop();
+  });
+
   test('start and stop control the interval', async () => {
     const deps = makeDeps();
     const loop = new HeartbeatLoop(deps, { intervalMs: 1000 });

@@ -158,6 +158,12 @@ export class HeartbeatLoop {
   start(): void {
     if (this.timer) return;
     this.deps.log(`[heartbeat] starting (interval: ${this.intervalMs}ms)`);
+
+    // Run initial tick immediately
+    this.tick().catch((err) => {
+      this.deps.log(`[heartbeat] initial tick error: ${err}`);
+    });
+
     this.timer = setInterval(() => {
       this.tick().catch((err) => {
         this.deps.log(`[heartbeat] tick error: ${err}`);
