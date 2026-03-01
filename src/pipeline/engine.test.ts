@@ -15,7 +15,7 @@ function makeRunner(): PipelineRunnerFn {
     if (role === 'reviewer' || role.includes('review')) {
       await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
     }
-    return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
   });
 }
 
@@ -88,7 +88,7 @@ describe('PipelineEngine review loop', () => {
         const verdict = callCount <= 3 ? 'REVISE' : 'APPROVE';
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), `# Code Review\nScore: ${verdict === 'APPROVE' ? '9' : '5'}/10\nVerdict: ${verdict}\n\n## Issues\n- Needs work`);
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -113,7 +113,7 @@ describe('PipelineEngine review loop', () => {
       if (role === 'reviewer') {
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Code Review\nScore: 3/10\nVerdict: REVISE\n');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {}, maxRetries: 2 });
@@ -144,7 +144,7 @@ describe('PipelineEngine review loop', () => {
         const verdict = reviewCount === 1 ? 'REDESIGN' : 'APPROVE';
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), `# Code Review\nScore: ${verdict === 'APPROVE' ? '9' : '2'}/10\nVerdict: ${verdict}\n`);
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -178,7 +178,7 @@ describe('PipelineEngine review loop', () => {
       if (role === 'reviewer') {
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
     const logs: string[] = [];
     const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
@@ -202,7 +202,7 @@ describe('PipelineEngine review loop', () => {
       if (role === 'reviewer') {
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const, sessionId: `session-${role}` };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, sessionId: `session-${role}`, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -243,6 +243,7 @@ describe('PipelineEngine review loop', () => {
         sandboxed: false,
         mode: 'standalone' as const,
         structuredOutput: role === 'reviewer' ? reviewOutput : undefined,
+        turnCount: 1,
       };
     });
 
@@ -280,7 +281,7 @@ describe('PipelineEngine review loop', () => {
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -298,47 +299,6 @@ describe('PipelineEngine review loop', () => {
     expect(runner).toHaveBeenCalledTimes(4);
     expect(result.retries).toBe(1);
     expect(result.completed).toBe(true);
-  });
-});
-
-describe('PipelineEngine patterns compliance', () => {
-  beforeEach(async () => {
-    await mkdir(BRAIN_DIR, { recursive: true });
-  });
-
-  afterEach(async () => {
-    await rm(TEST_PROJECT, { recursive: true, force: true });
-  });
-
-  test('logs warning when reviewer reports patterns non-compliance', async () => {
-    const logs: string[] = [];
-    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
-      return {
-        agentName: role,
-        sandboxed: false,
-        mode: 'standalone' as const,
-        structuredOutput: role === 'reviewer' ? {
-          verdict: 'APPROVE',
-          score: 7,
-          summary: 'Works but breaks patterns',
-          issues: [{ severity: 'minor', description: 'Violates naming convention in PATTERNS.md' }],
-          patternsCompliance: false,
-        } : undefined,
-      };
-    });
-
-    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
-
-    await engine.run({
-      stages: [
-        { agent: 'builder', teams: false },
-        { agent: 'reviewer', teams: false },
-      ],
-      project: TEST_PROJECT,
-      task: 'build something',
-    });
-
-    expect(logs.some(l => l.includes('patterns') && l.includes('non-compliance'))).toBe(true);
   });
 });
 
@@ -432,7 +392,7 @@ Details...
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const logs: string[] = [];
@@ -484,7 +444,7 @@ Details...
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -517,7 +477,7 @@ Details...
       if (role === 'reviewer') {
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -562,7 +522,7 @@ Details...
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -609,7 +569,7 @@ describe('PipelineEngine validateBuilder', () => {
   test('fails validation when builder changes no files', async () => {
     const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
       // Builder runs but does NOT modify any files
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -630,7 +590,7 @@ describe('PipelineEngine validateBuilder', () => {
       if (role === 'builder') {
         await writeFile(join(TEST_PROJECT, 'new-file.ts'), 'console.log("hello")');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -657,7 +617,7 @@ describe('PipelineEngine validateBuilder', () => {
         // Create a new file so diff check passes
         await writeFile(join(TEST_PROJECT, 'src.ts'), 'export const x = 1;');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -707,7 +667,7 @@ describe('PipelineEngine parseReviewVerdict fail-closed', () => {
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {}, maxRetries: 0 });
@@ -738,7 +698,7 @@ describe('PipelineEngine validateScout', () => {
   test('fails validation when scout does not create RESEARCH directory', async () => {
     const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
       // Scout runs but does NOT create .brain/RESEARCH/
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -761,7 +721,7 @@ describe('PipelineEngine validateScout', () => {
     await writeFile(join(researchDir, 'notes.txt'), 'some notes');
 
     const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -784,7 +744,7 @@ describe('PipelineEngine validateScout', () => {
         await mkdir(researchDir, { recursive: true });
         await writeFile(join(researchDir, 'findings.md'), '# Research\nSome findings...');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -811,7 +771,7 @@ describe('PipelineEngine validateArchitect fail-closed', () => {
   test('fails validation when architect does not produce PLAN.md', async () => {
     const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
       // Architect runs but does NOT write PLAN.md
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -857,7 +817,7 @@ Details...
       if (role === 'architect') {
         await writeFile(join(BRAIN_DIR, 'PLAN.md'), badPlan);
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const logs: string[] = [];
@@ -894,7 +854,7 @@ Details...
         await writeFile(join(BRAIN_DIR, 'PLAN-PART-1.md'), '### Task 1: Leftover');
         await writeFile(join(BRAIN_DIR, 'PLAN-PART-2.md'), '### Task 2: Leftover');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const logs: string[] = [];
@@ -946,7 +906,7 @@ Details...
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const logs: string[] = [];
@@ -1000,7 +960,7 @@ Details...
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -1026,7 +986,7 @@ Details...
       if (role === 'reviewer') {
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
     const engine = new PipelineEngine({ runner, log: () => {} });
 
@@ -1096,7 +1056,7 @@ describe('PipelineEngine review feedback file', () => {
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const logs: string[] = [];
@@ -1147,7 +1107,7 @@ describe('PipelineEngine review feedback file', () => {
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const logs: string[] = [];
@@ -1202,7 +1162,7 @@ describe('PipelineEngine builder/architect retry prompts', () => {
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -1247,7 +1207,7 @@ describe('PipelineEngine builder/architect retry prompts', () => {
           },
         };
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });
@@ -1289,7 +1249,7 @@ describe('PipelineEngine scout branch in buildStageTask', () => {
         await mkdir(join(BRAIN_DIR, 'RESEARCH'), { recursive: true });
         await writeFile(join(BRAIN_DIR, 'RESEARCH', 'findings.md'), '# Research\nFindings here');
       }
-      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
     });
 
     const engine = new PipelineEngine({ runner, log: () => {} });

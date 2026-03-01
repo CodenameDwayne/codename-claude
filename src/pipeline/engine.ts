@@ -3,14 +3,7 @@ import { join } from 'node:path';
 import type { PipelineStage } from './router.js';
 import { writePipelineState, type PipelineState, type ReviewOutput } from './state.js';
 import { parsePlanTasks, expandStagesWithBatches } from './orchestrator.js';
-
-export interface RunnerResult {
-  agentName: string;
-  sandboxed: boolean;
-  mode: 'standalone' | 'team';
-  sessionId?: string;
-  structuredOutput?: unknown;
-}
+import type { RunResult } from '../agents/runner.js';
 
 export interface RunnerOptions {
   mode: 'standalone' | 'team';
@@ -23,7 +16,7 @@ export type PipelineRunnerFn = (
   projectPath: string,
   task: string,
   options: RunnerOptions,
-) => Promise<RunnerResult>;
+) => Promise<RunResult>;
 
 export interface PipelineEngineConfig {
   runner: PipelineRunnerFn;
@@ -195,11 +188,6 @@ export class PipelineEngine {
           lastReviewOutput = review;
           verdict = review.verdict;
           this.config.log(`[pipeline] Reviewer verdict: ${verdict} (${review.score}/10, ${review.issues.length} issues)`);
-
-          // Log patterns compliance warning
-          if (review.patternsCompliance === false) {
-            this.config.log(`[pipeline] WARNING: Reviewer reports patterns non-compliance. Review .brain/PATTERNS.md adherence.`);
-          }
         } else {
           // Fallback: parse from REVIEW.md (backwards compat)
           verdict = await this.parseReviewVerdict(project);
