@@ -107,7 +107,7 @@ export class PipelineEngine {
       pipelineState.updatedAt = Date.now();
       await writePipelineState(project, pipelineState);
 
-      const stageTask = this.buildStageTask(stage.agent, task, i, stages);
+      const stageTask = this.buildStageTask(stage.agent, task, i, stages, retries);
 
       const result = await this.config.runner(stage.agent, project, stageTask, {
         mode,
@@ -464,8 +464,8 @@ export class PipelineEngine {
     }
   }
 
-  private buildStageTask(agent: string, originalTask: string, index: number, stages: PipelineStage[]): string {
-    if (index === 0) {
+  private buildStageTask(agent: string, originalTask: string, index: number, stages: PipelineStage[], retries: number = 0): string {
+    if (index === 0 && retries === 0) {
       return originalTask;
     }
 
@@ -484,7 +484,13 @@ export class PipelineEngine {
       const scopeInstruction = scope
         ? `\n\nIMPORTANT: You are working on ${scope} only. Read PLAN.md and implement ONLY those tasks. Do not implement tasks outside your batch scope.`
         : '';
-      return `Implement the following task. Start by reading .brain/PLAN.md — this is your implementation spec from Architect. It contains the architecture, directory structure, ordered tasks, and acceptance criteria. Also read .brain/DECISIONS.md for architectural decisions. Follow the plan step by step. Set up the project from scratch if needed (git init, bun init, bun install, create directories), write all source code, and ensure it builds and runs. Always use bun, not npm.${scopeInstruction}\n\nTask: ${originalTask}`;
+      const isRetry = retries > 0 && stages.some(
+        (s, idx) => (s.agent === 'reviewer' || s.agent.includes('review')) && idx > index
+      );
+      const retryInstruction = isRetry
+        ? `\n\nCRITICAL — RETRY: A previous review found issues. Read .brain/REVIEW.md FIRST and fix all listed issues before doing anything else. Address every issue mentioned.`
+        : '';
+      return `Implement the following task. Start by reading .brain/PLAN.md — this is your implementation spec from Architect. It contains the architecture, directory structure, ordered tasks, and acceptance criteria. Also read .brain/DECISIONS.md for architectural decisions. Follow the plan step by step. Set up the project from scratch if needed (git init, bun init, bun install, create directories), write all source code, and ensure it builds and runs. Always use bun, not npm.${scopeInstruction}${retryInstruction}\n\nTask: ${originalTask}`;
     }
 
     if (agent === 'architect' || agent.includes('architect')) {

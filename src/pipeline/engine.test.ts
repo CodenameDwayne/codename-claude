@@ -1172,3 +1172,55 @@ describe('PipelineEngine review feedback file', () => {
     expect(logs.some(l => l.includes('Wrote review feedback to .brain/REVIEW.md'))).toBe(true);
   });
 });
+
+describe('PipelineEngine builder/architect retry prompts', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('builder retry prompt includes REVIEW.md instruction after REVISE', async () => {
+    let reviewCount = 0;
+    const taskArgs: { role: string; task: string }[] = [];
+    const runner: PipelineRunnerFn = vi.fn(async (role: string, _project: string, task: string) => {
+      taskArgs.push({ role, task });
+      if (role === 'reviewer') {
+        reviewCount++;
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: reviewCount === 1 ? 'REVISE' : 'APPROVE',
+            score: reviewCount === 1 ? 5 : 9,
+            summary: 'Review',
+            issues: [],
+            patternsCompliance: true,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    await engine.run({
+      stages: [
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    // builder(1) → reviewer(2,REVISE) → builder(3) → reviewer(4,APPROVE)
+    // The second builder call (index 2) should include REVIEW.md instruction
+    const secondBuilderCall = taskArgs.filter(t => t.role === 'builder')[1];
+    expect(secondBuilderCall).toBeDefined();
+    expect(secondBuilderCall!.task).toContain('REVIEW.md');
+    expect(secondBuilderCall!.task).toContain('fix all listed issues');
+  });
+});
