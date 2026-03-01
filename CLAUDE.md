@@ -5,26 +5,22 @@ Autonomous PM + Developer agent daemon with a multi-stage pipeline (Scout → Ar
 ## Commands
 
 ```bash
-# Tests — ALWAYS use vitest, NEVER use `bun test` directly
-bun run test              # run full test suite (vitest run)
-npx vitest run            # equivalent
-npx vitest run src/pipeline/  # run tests for a specific directory
-npx vitest run -t "test name" # run a specific test by name
+# Tests — ALWAYS use vitest, NEVER `bun test`
+npx vitest run                    # full test suite
+npx vitest run src/pipeline/      # tests for a specific directory
+npx vitest run -t "test name"     # run a specific test by name
 
 # Build
-bun run build             # tsc → dist/
+npx tsc                           # tsc → dist/
+npx tsc --noEmit                  # type check only
 
 # Dev
-bun run dev               # run daemon via tsx
-
-# Type checking
-npx tsc --noEmit          # check types without emitting
+bun run dev                       # run daemon via tsx
 ```
 
-## Important: `bun test` vs `bun run test`
+## WARNING: Never use `bun test`
 
-- `bun test` uses bun's **built-in** test runner — it is missing `vi.useFakeTimers()`, `vi.setSystemTime()`, and other vitest-specific APIs. **Do not use it.**
-- `bun run test` invokes the `test` script from package.json which runs `vitest run` — the correct runner. **Always use this.**
+`bun test` invokes bun's built-in test runner, NOT vitest. It is missing `vi.useFakeTimers()`, `vi.setSystemTime()`, and other vitest APIs. Tests will appear to fail when they actually pass under vitest. Always use `npx vitest run`.
 
 ## Project Structure
 
