@@ -407,7 +407,11 @@ export class PipelineEngine {
     }
 
     if (agent === 'architect' || agent.includes('architect')) {
-      return `Design the architecture and create a detailed implementation plan for the following task. Start by reading .brain/RESEARCH/ if it exists — this contains research from the Scout agent. Then follow the plan-feature skill. Write the plan to .brain/PLAN.md and any architectural decisions to .brain/DECISIONS.md. Do NOT write any source code, config files, or install dependencies — you ONLY write to .brain/ files. The Builder agent will handle all implementation.\n\nTask: ${originalTask}`;
+      const isTeamMode = stages[index]?.teams ?? false;
+      const teamInstruction = isTeamMode
+        ? `\n\nIMPORTANT — TEAM MODE: You are running with Claude Agent Teams enabled. You MUST use the TeamCreate tool to create a planning team, then spawn teammates via the Task tool (with name and team_name parameters) to write plan sections in parallel. Follow the plan-feature-team skill. Do NOT write the entire plan yourself — delegate planning domains to teammates to avoid hitting output token limits.`
+        : '';
+      return `Design the architecture and create a detailed implementation plan for the following task. Start by reading .brain/RESEARCH/ if it exists — this contains research from the Scout agent. Then follow the plan-feature skill. Write the plan to .brain/PLAN.md and any architectural decisions to .brain/DECISIONS.md. Do NOT write any source code, config files, or install dependencies — you ONLY write to .brain/ files. The Builder agent will handle all implementation.${teamInstruction}\n\nTask: ${originalTask}`;
     }
 
     return originalTask;
