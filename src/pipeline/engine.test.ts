@@ -2,13 +2,25 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { writeFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PipelineEngine, type PipelineRunnerFn } from './engine.js';
+import { readPipelineState } from './state.js';
 import type { PipelineStage } from './router.js';
+
+const TEST_PROJECT = join(import.meta.dirname, '../../.test-state/pipeline-test');
+const BRAIN_DIR = join(TEST_PROJECT, '.brain');
 
 function makeRunner(): PipelineRunnerFn {
   return vi.fn(async () => ({ agentName: 'builder', sandboxed: false, mode: 'standalone' as const }));
 }
 
 describe('PipelineEngine', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
   test('runs stages sequentially', async () => {
     const runner = makeRunner();
     const logs: string[] = [];
@@ -19,14 +31,11 @@ describe('PipelineEngine', () => {
       { agent: 'reviewer', teams: false },
     ];
 
-    await engine.run({ stages, project: '/tmp/test', task: 'build something' });
+    await engine.run({ stages, project: TEST_PROJECT, task: 'build something' });
 
     expect(runner).toHaveBeenCalledTimes(2);
-    // First call is builder
-    expect(runner).toHaveBeenNthCalledWith(1, 'builder', '/tmp/test', expect.any(String), expect.objectContaining({ mode: 'standalone' }));
-    // Second call is reviewer
-    expect(runner).toHaveBeenNthCalledWith(2, 'reviewer', '/tmp/test', expect.any(String), expect.objectContaining({ mode: 'standalone' }));
-    // Logs show pipeline progress
+    expect(runner).toHaveBeenNthCalledWith(1, 'builder', TEST_PROJECT, expect.any(String), expect.objectContaining({ mode: 'standalone' }));
+    expect(runner).toHaveBeenNthCalledWith(2, 'reviewer', TEST_PROJECT, expect.any(String), expect.objectContaining({ mode: 'standalone' }));
     expect(logs.some(l => l.includes('Stage 1/2'))).toBe(true);
     expect(logs.some(l => l.includes('Stage 2/2'))).toBe(true);
     expect(logs.some(l => l.includes('Pipeline complete'))).toBe(true);
@@ -40,14 +49,11 @@ describe('PipelineEngine', () => {
       { agent: 'builder', teams: true },
     ];
 
-    await engine.run({ stages, project: '/tmp/test', task: 'complex task' });
+    await engine.run({ stages, project: TEST_PROJECT, task: 'complex task' });
 
-    expect(runner).toHaveBeenCalledWith('builder', '/tmp/test', expect.any(String), expect.objectContaining({ mode: 'team' }));
+    expect(runner).toHaveBeenCalledWith('builder', TEST_PROJECT, expect.any(String), expect.objectContaining({ mode: 'team' }));
   });
 });
-
-const TEST_PROJECT = join(import.meta.dirname, '../../.test-state/pipeline-test');
-const BRAIN_DIR = join(TEST_PROJECT, '.brain');
 
 describe('PipelineEngine review loop', () => {
   beforeEach(async () => {
@@ -63,7 +69,6 @@ describe('PipelineEngine review loop', () => {
     const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
       callCount++;
       if (role === 'reviewer') {
-        // First review: REVISE, second review: APPROVE
         const verdict = callCount <= 3 ? 'REVISE' : 'APPROVE';
         await writeFile(join(BRAIN_DIR, 'REVIEW.md'), `# Code Review\nScore: ${verdict === 'APPROVE' ? '9' : '5'}/10\nVerdict: ${verdict}\n\n## Issues\n- Needs work`);
       }
@@ -107,7 +112,6 @@ describe('PipelineEngine review loop', () => {
     });
 
     // builder → reviewer(REVISE) → builder → reviewer(REVISE) → builder → reviewer(REVISE) → STOP
-    // That's 3 builder + 3 reviewer = 6 calls (initial + 2 retries)
     expect(runner).toHaveBeenCalledTimes(6);
     expect(result.completed).toBe(false);
     expect(result.retries).toBe(2);
@@ -140,5 +144,36 @@ describe('PipelineEngine review loop', () => {
     expect(runner).toHaveBeenCalledTimes(6);
     expect(result.retries).toBe(1);
     expect(result.completed).toBe(true);
+  });
+
+  test('writes pipeline-state.json at each stage transition', async () => {
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'reviewer') {
+        await writeFile(join(BRAIN_DIR, 'REVIEW.md'), '# Review\nVerdict: APPROVE\n');
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, sessionId: `session-${role}` };
+    });
+
+    const engine = new PipelineEngine({ runner, log: () => {} });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build something',
+    });
+
+    expect(result.completed).toBe(true);
+
+    const state = await readPipelineState(TEST_PROJECT);
+    expect(state).not.toBeNull();
+    expect(state!.status).toBe('completed');
+    expect(state!.stages[0]!.status).toBe('completed');
+    expect(state!.stages[0]!.sessionId).toBe('session-builder');
+    expect(state!.stages[1]!.status).toBe('completed');
+    expect(state!.stages[1]!.sessionId).toBe('session-reviewer');
+    expect(state!.finalVerdict).toBe('APPROVE');
   });
 });
