@@ -146,6 +146,25 @@ describe('PipelineEngine review loop', () => {
     expect(result.completed).toBe(true);
   });
 
+  test('buildStageTask tells architect to read RESEARCH/ when scout precedes it', async () => {
+    const runner = makeRunner();
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const stages: PipelineStage[] = [
+      { agent: 'scout', teams: false },
+      { agent: 'architect', teams: false },
+      { agent: 'builder', teams: false },
+    ];
+
+    await engine.run({ stages, project: TEST_PROJECT, task: 'build something' });
+
+    // The task passed to architect (second call) should mention RESEARCH
+    const architectCall = (runner as ReturnType<typeof vi.fn>).mock.calls[1];
+    const architectTask = architectCall![2] as string;
+    expect(architectTask).toContain('RESEARCH');
+  });
+
   test('writes pipeline-state.json at each stage transition', async () => {
     const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
       if (role === 'reviewer') {

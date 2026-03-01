@@ -269,11 +269,11 @@ export class PipelineEngine {
     }
 
     if (agent === 'builder' || agent.includes('build')) {
-      return `Implement the following task based on the plan in .brain/PLAN.md: ${originalTask}`;
+      return `Implement the following task. Start by reading .brain/PLAN.md — this is your implementation spec from Architect. It contains the architecture, directory structure, ordered tasks, and acceptance criteria. Also read .brain/DECISIONS.md for architectural decisions. Follow the plan step by step. Set up the project from scratch if needed (git init, bun init, bun install, create directories), write all source code, and ensure it builds and runs. Always use bun, not npm.\n\nTask: ${originalTask}`;
     }
 
     if (agent === 'architect' || agent.includes('architect')) {
-      return `Design the architecture for the following task and write the plan to .brain/PLAN.md: ${originalTask}`;
+      return `Design the architecture and create a detailed implementation plan for the following task. Start by reading .brain/RESEARCH/ if it exists — this contains research from the Scout agent. Then follow the plan-feature skill. Write the plan to .brain/PLAN.md and any architectural decisions to .brain/DECISIONS.md. Do NOT write any source code, config files, or install dependencies — you ONLY write to .brain/ files. The Builder agent will handle all implementation.\n\nTask: ${originalTask}`;
     }
 
     return originalTask;

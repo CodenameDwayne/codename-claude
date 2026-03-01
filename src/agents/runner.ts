@@ -174,11 +174,9 @@ async function buildSystemPrompt(
   const brainDir = join(projectPath, '.brain');
   const brainFiles = [
     'PROJECT.md',
-    'ACTIVE.md',
     'DECISIONS.md',
     'PATTERNS.md',
     'MISTAKES.md',
-    'SESSIONS/latest.md',
   ];
 
   const brainSections: string[] = [];
@@ -187,6 +185,12 @@ async function buildSystemPrompt(
     if (content && content.trim()) {
       brainSections.push(`### ${file}\n\n${content}`);
     }
+  }
+
+  // Load RESEARCH/ directory contents if they exist
+  const researchFiles = await readAllFilesInDir(join(brainDir, 'RESEARCH'));
+  if (researchFiles.length > 0) {
+    brainSections.push(`### RESEARCH/\n\n${researchFiles.join('\n\n---\n\n')}`);
   }
 
   if (brainSections.length > 0) {
