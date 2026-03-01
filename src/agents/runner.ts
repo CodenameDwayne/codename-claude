@@ -75,6 +75,7 @@ export interface RunResult {
   sandboxed: boolean;
   mode: 'standalone' | 'team';
   syncedFiles?: string[];
+  sessionId?: string;
 }
 
 export interface RunOptions {
@@ -255,6 +256,8 @@ export async function runAgent(
   const claudePath = findClaudeExecutable();
   log(`[runner] Using claude at: ${claudePath}`);
 
+  let sessionId: string | undefined;
+
   for await (const message of query({
     prompt: task,
     options: {
@@ -278,6 +281,12 @@ export async function runAgent(
     },
   })) {
     const msg = message as Record<string, unknown>;
+
+    // Capture session_id from the first message that has one
+    if (!sessionId && typeof msg['session_id'] === 'string') {
+      sessionId = msg['session_id'];
+    }
+
     if (msg['type'] === 'assistant' && msg['message']) {
       const assistantMsg = msg['message'] as Record<string, unknown>;
       const content = assistantMsg['content'];
@@ -301,5 +310,6 @@ export async function runAgent(
     agentName: agent.frontmatter.name,
     sandboxed,
     mode,
+    sessionId,
   };
 }
