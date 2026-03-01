@@ -47,5 +47,6 @@ export function expandStagesWithBatches(
     batches.push({ ...reviewerTemplate, batchScope: scope });
   }
 
-  return [...before, ...batches];
+  const after = stages.slice(reviewerIdx + 1);
+  return [...before, ...batches, ...after];
 }

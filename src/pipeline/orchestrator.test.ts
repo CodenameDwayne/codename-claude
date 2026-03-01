@@ -127,4 +127,17 @@ describe('expandStagesWithBatches', () => {
     expect(expanded[2]!.agent).toBe('builder');
     expect(expanded[2]!.batchScope).toBe('Tasks 1-3');
   });
+
+  test('preserves stages after reviewer in batch expansion', () => {
+    const stages: PipelineStage[] = [
+      { agent: 'architect', teams: false },
+      { agent: 'builder', teams: false },
+      { agent: 'reviewer', teams: false },
+      { agent: 'deployer', teams: false },
+    ];
+
+    const result = expandStagesWithBatches(stages, 3, 'builder');
+    const agentNames = result.map(s => s.agent);
+    expect(agentNames[agentNames.length - 1]).toBe('deployer');
+  });
 });
