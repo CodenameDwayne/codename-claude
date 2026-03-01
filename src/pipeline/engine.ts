@@ -47,7 +47,7 @@ export class PipelineEngine {
 
   constructor(config: PipelineEngineConfig) {
     this.config = config;
-    this.maxRetries = config.maxRetries ?? 3;
+    this.maxRetries = config.maxRetries ?? 2;
   }
 
   async run(options: PipelineRunOptions): Promise<PipelineResult> {
@@ -61,7 +61,7 @@ export class PipelineEngine {
     // Ensure .brain/PROJECT.md exists for first-run bootstrap
     await this.ensureProjectContext(project, task);
 
-    let retries = 0;
+    const batchRetries = new Map<string, number>();
 
     this.config.log(`[pipeline] Starting pipeline: ${stages.map(s => s.agent).join(' → ')}`);
     this.config.log(`[pipeline] Task: "${task}"`);
@@ -100,7 +100,10 @@ export class PipelineEngine {
       pipelineState.updatedAt = Date.now();
       await writePipelineState(project, pipelineState);
 
-      const stageTask = this.buildStageTask(stage.agent, task, i, stages, retries);
+      const stageBatchKey = stage.batchScope ?? 'global';
+      const currentRetries = batchRetries.get(stageBatchKey) ?? 0;
+
+      const stageTask = this.buildStageTask(stage.agent, task, i, stages, currentRetries);
 
       const result = await this.config.runner(stage.agent, project, stageTask, {
         mode,
@@ -137,7 +140,8 @@ export class PipelineEngine {
         pipelineState.error = validationError;
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
-        return { completed: false, stagesRun, teamStagesRun, retries, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds, review: lastReviewOutput };
+        const totalRetriesOnFail = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
+        return { completed: false, stagesRun, teamStagesRun, retries: totalRetriesOnFail, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds, review: lastReviewOutput };
       }
 
       pipelineState.stages[i]!.status = 'completed';
@@ -199,23 +203,30 @@ export class PipelineEngine {
           continue;
         }
 
-        if (retries >= this.maxRetries) {
-          this.config.log(`[pipeline] Max retries (${this.maxRetries}) reached. Stopping.`);
+        // Determine retry key: REDESIGN uses 'global' (restarts from architect),
+        // REVISE uses the batch scope (restarts within a batch)
+        const retryKey = verdict === 'REDESIGN' ? 'global' : (stage.batchScope ?? 'global');
+        const keyRetries = batchRetries.get(retryKey) ?? 0;
+
+        if (keyRetries >= this.maxRetries) {
+          const totalRetries = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
+          this.config.log(`[pipeline] Max retries (${this.maxRetries}) reached for ${retryKey}. Stopping.`);
           pipelineState.status = 'failed';
           pipelineState.finalVerdict = verdict;
-          pipelineState.retries = retries;
+          pipelineState.retries = totalRetries;
           pipelineState.updatedAt = Date.now();
           await writePipelineState(project, pipelineState);
-          return { completed: false, stagesRun, teamStagesRun, retries, finalVerdict: verdict, sessionIds, review: lastReviewOutput };
+          return { completed: false, stagesRun, teamStagesRun, retries: totalRetries, finalVerdict: verdict, sessionIds, review: lastReviewOutput };
         }
 
-        retries++;
-        pipelineState.retries = retries;
+        batchRetries.set(retryKey, keyRetries + 1);
+        const totalRetries = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
+        pipelineState.retries = totalRetries;
 
         // Write review feedback to .brain/REVIEW.md so retrying agents can read it
         if (lastReviewOutput) {
           const reviewMd = [
-            `# Review Feedback (Retry ${retries})`,
+            `# Review Feedback (Retry ${totalRetries})`,
             '',
             `**Verdict:** ${lastReviewOutput.verdict}`,
             `**Score:** ${lastReviewOutput.score}/10`,
@@ -235,7 +246,7 @@ export class PipelineEngine {
         if (verdict === 'REDESIGN') {
           const architectIdx = stages.findIndex(s => s.agent === 'architect' || s.agent.includes('architect'));
           const restartIdx = architectIdx >= 0 ? architectIdx : 0;
-          this.config.log(`[pipeline] Reviewer verdict: REDESIGN — restarting from ${stages[restartIdx]!.agent} (retry ${retries})`);
+          this.config.log(`[pipeline] Reviewer verdict: REDESIGN — restarting from ${stages[restartIdx]!.agent} (retry ${totalRetries})`);
           for (let j = restartIdx; j < stages.length; j++) {
             pipelineState.stages[j]!.status = 'pending';
             pipelineState.stages[j]!.startedAt = undefined;
@@ -251,7 +262,7 @@ export class PipelineEngine {
         // REVISE
         const builderIdx = stages.slice(0, i).reverse().findIndex(s => s.agent === 'builder' || s.agent.includes('build'));
         const restartIdx = builderIdx >= 0 ? i - 1 - builderIdx : Math.max(0, i - 1);
-        this.config.log(`[pipeline] Reviewer verdict: REVISE — re-running ${stages[restartIdx]!.agent} (retry ${retries})`);
+        this.config.log(`[pipeline] Reviewer verdict: REVISE — re-running ${stages[restartIdx]!.agent} (retry ${totalRetries})`);
         for (let j = restartIdx; j < stages.length; j++) {
           pipelineState.stages[j]!.status = 'pending';
           pipelineState.stages[j]!.startedAt = undefined;
@@ -267,7 +278,8 @@ export class PipelineEngine {
       i++;
     }
 
-    this.config.log(`[pipeline] Pipeline complete (${stagesRun} stages, ${retries} retries)`);
+    const finalTotalRetries = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
+    this.config.log(`[pipeline] Pipeline complete (${stagesRun} stages, ${finalTotalRetries} retries)`);
 
     // Final state
     pipelineState.status = 'completed';
@@ -275,7 +287,7 @@ export class PipelineEngine {
     pipelineState.updatedAt = Date.now();
     await writePipelineState(project, pipelineState);
 
-    return { completed: true, stagesRun, teamStagesRun, retries, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
+    return { completed: true, stagesRun, teamStagesRun, retries: finalTotalRetries, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
   }
 
   private async ensureProjectContext(project: string, task: string): Promise<void> {

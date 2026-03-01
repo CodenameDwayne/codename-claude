@@ -1270,3 +1270,149 @@ describe('PipelineEngine scout branch in buildStageTask', () => {
     expect(scoutCall!.task).toContain('build a web scraper');
   });
 });
+
+describe('PipelineEngine per-batch retry counters', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('per-batch retry allows later batches to retry after earlier exhaustion', async () => {
+    // Scenario: architect produces 4 tasks => 2 batches (Tasks 1-3, Task 4)
+    // Batch 1 reviewer always REVISEs => exhausts its 2-retry budget => fails
+    // BUT we want to verify that each batch has its own retry counter.
+    //
+    // Since the pipeline stops on failure, we test the inverse:
+    // Batch 1's reviewer REVISEs once (1 retry), then APPROVEs.
+    // Batch 2's reviewer REVISEs twice (2 retries), then APPROVEs.
+    // With a global counter of 2, batch 2's second REVISE would fail (total=3 > 2).
+    // With per-batch counters of 2, batch 2 still has budget.
+
+    const planContent = `# Plan
+### Task 1: First
+### Task 2: Second
+### Task 3: Third
+### Task 4: Fourth
+`;
+
+    let batch1ReviewCount = 0;
+    let batch2ReviewCount = 0;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string, _project: string, task: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), planContent);
+      }
+      if (role === 'reviewer') {
+        const isBatch1 = task.includes('Tasks 1-3');
+        if (isBatch1) {
+          batch1ReviewCount++;
+          return {
+            agentName: role,
+            sandboxed: false,
+            mode: 'standalone' as const,
+            structuredOutput: {
+              verdict: batch1ReviewCount === 1 ? 'REVISE' : 'APPROVE',
+              score: batch1ReviewCount === 1 ? 5 : 9,
+              summary: 'Review',
+              issues: batch1ReviewCount === 1
+                ? [{ severity: 'major' as const, description: 'Fix batch 1' }]
+                : [],
+              patternsCompliance: true,
+            },
+          };
+        } else {
+          batch2ReviewCount++;
+          return {
+            agentName: role,
+            sandboxed: false,
+            mode: 'standalone' as const,
+            structuredOutput: {
+              verdict: batch2ReviewCount <= 2 ? 'REVISE' : 'APPROVE',
+              score: batch2ReviewCount <= 2 ? 4 : 9,
+              summary: 'Review',
+              issues: batch2ReviewCount <= 2
+                ? [{ severity: 'major' as const, description: 'Fix batch 2' }]
+                : [],
+              patternsCompliance: true,
+            },
+          };
+        }
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build app',
+    });
+
+    // With per-batch retries (limit=2):
+    //   Batch 1: builder → reviewer(REVISE, retry 1) → builder → reviewer(APPROVE) = 1 retry used
+    //   Batch 2: builder → reviewer(REVISE, retry 1) → builder → reviewer(REVISE, retry 2) → builder → reviewer(APPROVE) = 2 retries used
+    // Total retries = 3, but each batch stays within its own limit of 2
+    expect(result.completed).toBe(true);
+    expect(result.retries).toBe(3); // sum of all batch retries
+    expect(batch1ReviewCount).toBe(2);
+    expect(batch2ReviewCount).toBe(3);
+  });
+
+  test('per-batch retry fails when single batch exceeds its retry limit', async () => {
+    const planContent = `# Plan
+### Task 1: First
+### Task 2: Second
+### Task 3: Third
+`;
+
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      if (role === 'architect') {
+        await writeFile(join(BRAIN_DIR, 'PLAN.md'), planContent);
+      }
+      if (role === 'reviewer') {
+        // Always REVISE — this batch will exhaust its retry budget
+        return {
+          agentName: role,
+          sandboxed: false,
+          mode: 'standalone' as const,
+          structuredOutput: {
+            verdict: 'REVISE',
+            score: 3,
+            summary: 'Always fails',
+            issues: [{ severity: 'major' as const, description: 'Never good enough' }],
+            patternsCompliance: false,
+          },
+        };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
+    });
+
+    const logs: string[] = [];
+    const engine = new PipelineEngine({ runner, log: (m) => logs.push(m) });
+
+    const result = await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'build app',
+    });
+
+    // Single batch (Tasks 1-3), always REVISE:
+    // builder → reviewer(REVISE, retry 1) → builder → reviewer(REVISE, retry 2) → builder → reviewer(REVISE, retry > limit) → STOP
+    expect(result.completed).toBe(false);
+    expect(result.finalVerdict).toBe('REVISE');
+    expect(logs.some(l => l.includes('Max retries') && l.includes('Tasks 1-3'))).toBe(true);
+  });
+});
