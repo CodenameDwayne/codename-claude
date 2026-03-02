@@ -25,3 +25,6 @@ export interface FurnitureSprite {
   widthTiles: number;
   heightTiles: number;
 }
+
+/** A loaded tileset: grid of SpriteData indexed by [row][col]. */
+export type TilesetGrid = SpriteData[][];
