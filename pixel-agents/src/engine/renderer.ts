@@ -3,7 +3,7 @@ import type { Character } from '../agents/characterState';
 import type { TileMap } from './tileMap';
 import { TileType, TILE_SIZE } from './tileMap';
 import type { SpriteData, TilesetGrid, CharacterSprites } from '../sprites/types';
-import type { Theme, FurniturePlacement } from '../themes/types';
+import type { Theme } from '../themes/types';
 import type { AgentRole } from '../ws/types';
 import { getCachedCanvas } from '../sprites/cache';
 import { getTileSprite } from '../sprites/tileset';

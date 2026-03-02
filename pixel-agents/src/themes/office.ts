@@ -6,7 +6,6 @@ const F = TileType.Floor;
 const W = TileType.Wall;
 const D = TileType.Desk;
 const C = TileType.Chair;
-const U = TileType.Furniture;
 
 // 20 wide × 15 tall open-plan office
 const tiles: TileType[][] = [
