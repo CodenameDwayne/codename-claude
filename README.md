@@ -12,30 +12,26 @@ You: "Build a CLI bookmark manager in TypeScript"
             │  (Claude)      │
             └───────┬───────┘
                     │
-            ┌───────▼───────┐
-            │   Architect   │  Plans, writes PLAN.md with
-            │   (Opus)      │  ### Task 1: ... ### Task N: ...
-            └───────┬───────┘
-                    │
-            ┌───────▼───────┐
-            │  Orchestrator │  Parses tasks, groups into
-            │               │  batches of 3
-            └───────┬───────┘
-                    │
-        ┌───────────┼───────────┐
-        ▼           ▼           ▼
-   Tasks 1-3    Tasks 4-6    Task 7
-   ┌────────┐   ┌────────┐   ┌────────┐
-   │Builder  │   │Builder  │   │Builder  │
-   │ ▼       │   │ ▼       │   │ ▼       │
-   │Reviewer │   │Reviewer │   │Reviewer │
-   └────────┘   └────────┘   └────────┘
-        │           │           │
-     APPROVE     APPROVE     APPROVE
-        │           │           │
-        └───────────┼───────────┘
-                    ▼
-              Code shipped.
+     ┌──────────────┼──────────────┐
+     ▼              ▼              ▼
+ ┌────────┐   ┌──────────┐   ┌──────────┐
+ │ Scout  │   │Architect │   │  Ralph   │
+ │research│──▶│  plan    │──▶│  Loop    │
+ └────────┘   └──────────┘   └────┬─────┘
+                                   │
+                    ┌──────────────┼──── ...
+                    ▼              ▼
+              ┌──────────┐  ┌──────────┐
+              │ Task 1   │  │ Task 2   │  One fresh session
+              │ Builder  │  │ Builder  │  per task
+              │    ▼     │  │    ▼     │
+              │ Reviewer │  │ Reviewer │
+              └────┬─────┘  └────┬─────┘
+                APPROVE       APPROVE
+                   │             │
+                   └──────┬──────┘
+                          ▼
+                    Code shipped.
 ```
 
 The daemon runs in the background, consuming zero tokens when idle. When a task arrives — via CLI, cron schedule, GitHub webhook, or file change — it fires the pipeline and agents work autonomously.
@@ -121,7 +117,7 @@ Agents are sandboxed by role — Builder and Reviewer run in isolated VMs.
 
 ### Pipeline Patterns
 
-The LLM router selects one of two patterns:
+The LLM router selects agents based on task complexity:
 
 **Simple** (spec already exists):
 ```
@@ -130,25 +126,24 @@ Builder → Reviewer
 
 **Complex** (needs planning):
 ```
-Architect → Orchestrator → Builder(batch 1) → Reviewer(batch 1) → ... → Builder(batch N) → Reviewer(batch N)
+Scout → Architect → Ralph Loop (Builder → Reviewer per task)
 ```
 
-Scout is invoked on-demand by Architect when research is needed, not as a fixed pipeline stage.
+Scout researches the problem space, Architect produces a plan, then the Ralph loop executes it one task at a time.
 
-### Batch Orchestration
+### Ralph Wiggum Loop
 
-After the Architect writes `PLAN.md` with `### Task N:` headings, the Orchestrator automatically:
+After the Architect writes `PLAN.md` with checkbox tasks (`- [ ] Task description`), the engine enters the Ralph loop:
 
-1. Parses task headings from the plan
-2. Groups tasks into batches of 3
-3. Expands the single `[Builder, Reviewer]` pair into scoped batch pairs
+1. Reads PLAN.md, finds the next unchecked task
+2. Spawns a **fresh Builder session** for that single task
+3. Spawns a **fresh Reviewer session** to review it
+4. Handles the verdict:
+   - **APPROVE** → marks the checkbox `[x]`, moves to next task
+   - **REVISE** → retries the same task in a fresh session (per-task attempt limit)
+   - **REDESIGN** → re-runs Architect to produce a new plan, resets the loop
 
-For example, a plan with 7 tasks becomes:
-```
-Architect → Builder(Tasks 1-3) → Reviewer(Tasks 1-3) → Builder(Tasks 4-6) → Reviewer(Tasks 4-6) → Builder(Task 7) → Reviewer(Task 7)
-```
-
-Each Builder/Reviewer receives scoped instructions limiting them to their batch. REVISE loops re-run only the affected batch. If `PLAN.md` has no task headings, the pipeline runs as a single stage (backward compatible).
+Each task gets its own clean SDK session, eliminating context rot. The loop continues until all checkboxes are checked or a failure threshold is reached.
 
 ### Review Loop
 
@@ -188,8 +183,8 @@ Skills are how-to protocols loaded into agent system prompts:
 
 | Skill | Agent | What it does |
 |-------|-------|-------------|
-| `plan-feature` | Architect | Strict `### Task N:` plan format with TDD steps |
-| `execute-plan` | Builder | Follow plan literally, respect batch scope |
+| `plan-feature` | Architect | Checkbox task list + TDD detail sections |
+| `execute-plan` | Builder | Implement one assigned task per session |
 | `verify-completion` | Builder, Reviewer | No claims without fresh test evidence |
 | `review-loop` | Reviewer | Score, trend, route with cycle cap |
 | `review-code` | Reviewer | Correctness, tests, security, patterns checklist |
@@ -244,10 +239,10 @@ src/
 │   ├── runner.ts          Spawns agent sessions via SDK
 │   └── sandbox.ts         Vercel Sandbox integration
 ├── pipeline/
-│   ├── engine.ts          Pipeline engine (runs stages, review loops)
-│   ├── orchestrator.ts    Batch expansion (parses PLAN.md, groups tasks)
+│   ├── engine.ts          Pipeline engine (two-phase: pre-loop + Ralph loop)
+│   ├── orchestrator.ts    Checkbox parsing (PLAN.md task list)
 │   ├── router.ts          LLM task router (Haiku)
-│   └── state.ts           Pipeline state persistence
+│   └── state.ts           Pipeline state types + persistence
 ├── heartbeat/
 │   ├── loop.ts            Event loop (60s tick)
 │   └── queue.ts           Persistent work queue
@@ -269,8 +264,11 @@ src/
 ## Development
 
 ```bash
-# Run tests
-bun run test
+# Run tests (always use vitest, never bun test)
+npx vitest run
+
+# Run a specific test file
+npx vitest run src/pipeline/engine.test.ts
 
 # Run daemon in dev mode
 bun run dev
@@ -278,8 +276,8 @@ bun run dev
 # Build
 bun run build
 
-# Run a specific test file
-bun run test src/pipeline/engine.test.ts
+# Type-check
+npx tsc --noEmit
 ```
 
 ## Requirements

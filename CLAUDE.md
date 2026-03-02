@@ -28,12 +28,12 @@ bun run dev                       # run daemon via tsx
 src/
 ├── agents/runner.ts        # Spawns Claude SDK sessions for each agent role
 ├── pipeline/
-│   ├── engine.ts           # Core pipeline orchestrator (stage loop, validation, retries)
+│   ├── engine.ts           # Two-phase pipeline: pre-loop agents + Ralph loop (one task per session)
 │   ├── router.ts           # Routes tasks to agent stages
-│   ├── orchestrator.ts     # Batch expansion (PLAN.md tasks → builder/reviewer pairs)
-│   └── state.ts            # Pipeline state types + persistence
+│   ├── orchestrator.ts     # Checkbox parsing (parseCheckboxTasks, markTaskComplete, findNextTask)
+│   └── state.ts            # Pipeline state types (TaskProgress) + persistence
 ├── heartbeat/
-│   ├── loop.ts             # Heartbeat tick loop (triggers, queue, budget)
+│   ├── loop.ts             # Heartbeat tick loop (triggers, queue, budget, stall detection)
 │   └── queue.ts            # File-backed work queue
 ├── state/
 │   ├── budget.ts           # Rolling window budget tracking
