@@ -1,32 +1,42 @@
+// pixel-agents/src/App.tsx
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useWebSocket } from './ws/useWebSocket';
 import { useGameScene } from './hooks/useGameScene';
-import { cyberpunkTheme } from './themes/cyberpunk';
+import { useAssets } from './hooks/useAssets';
+import { officeTheme } from './themes/office';
+import { AGENT_COLORS } from './sprites/characters';
 import { DemoRunner } from './demo/demoMode';
-import type { AgentRole, WSEvent } from './ws/types';
+import type { WSEvent, AgentRole, ConnectionStatus } from './ws/types';
 import './App.css';
 
-const GLOW_COLORS: Record<AgentRole, string> = {
-  scout: '#00ffff',
-  architect: '#ffd700',
-  builder: '#00ff41',
-  reviewer: '#ff00ff',
-};
+const ROLES: AgentRole[] = ['scout', 'architect', 'builder', 'reviewer'];
 
-function App() {
+function useAgentStates(events: WSEvent[]) {
+  const states = useRef<Record<AgentRole, string>>({
+    scout: 'Idle', architect: 'Idle', builder: 'Idle', reviewer: 'Idle',
+  });
+  const latest = events[events.length - 1];
+  if (latest) {
+    if (latest.type === 'agent:active') states.current[latest.agent] = latest.activity;
+    if (latest.type === 'agent:idle') states.current[latest.agent] = 'Idle';
+  }
+  return states.current;
+}
+
+export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState(3);
   const [demoActive, setDemoActive] = useState(false);
   const [demoEvents, setDemoEvents] = useState<WSEvent[]>([]);
-  const demoRunnerRef = useRef<DemoRunner | null>(null);
-  const { status, events } = useWebSocket();
+  const demoRef = useRef<DemoRunner | null>(null);
 
-  // Use WS events when connected, demo events when in demo mode
-  const activeEvents = status === 'connected' ? events : demoEvents;
+  const { assets, error: assetError } = useAssets();
+  const { status, events: wsEvents } = useWebSocket();
 
-  useGameScene(canvasRef, cyberpunkTheme, activeEvents, zoom);
+  const events = status === 'connected' ? wsEvents : demoEvents;
+  const agentStates = useAgentStates(events);
 
-  const agentStates = useAgentStates(activeEvents);
+  useGameScene(canvasRef, officeTheme, events, zoom, assets);
 
   const pushDemoEvent = useCallback((event: WSEvent) => {
     setDemoEvents((prev) => [...prev.slice(-99), event]);
@@ -34,46 +44,47 @@ function App() {
 
   const toggleDemo = useCallback(() => {
     if (demoActive) {
-      demoRunnerRef.current?.stop();
-      demoRunnerRef.current = null;
+      demoRef.current?.stop();
+      demoRef.current = null;
       setDemoActive(false);
       setDemoEvents([]);
     } else {
       const runner = new DemoRunner();
-      demoRunnerRef.current = runner;
+      demoRef.current = runner;
       setDemoActive(true);
       setDemoEvents([]);
       runner.start(pushDemoEvent);
     }
   }, [demoActive, pushDemoEvent]);
 
-  // Stop demo when WS connects
   useEffect(() => {
     if (status === 'connected' && demoActive) {
-      demoRunnerRef.current?.stop();
-      demoRunnerRef.current = null;
+      demoRef.current?.stop();
+      demoRef.current = null;
       setDemoActive(false);
-      setDemoEvents([]);
     }
   }, [status, demoActive]);
 
-  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      demoRunnerRef.current?.stop();
-    };
+    return () => { demoRef.current?.stop(); };
   }, []);
+
+  if (assetError) {
+    return <div className="app loading">Failed to load assets: {assetError}</div>;
+  }
+
+  if (!assets) {
+    return <div className="app loading">Loading assets...</div>;
+  }
 
   return (
     <div className="app">
       <header className="header">
         <h1>Codename Claude — Pixel Agents</h1>
-        <div className="header-controls">
-          {status !== 'connected' && (
-            <button className="demo-btn" onClick={toggleDemo}>
-              {demoActive ? 'Stop Demo' : 'Run Demo'}
-            </button>
-          )}
+        <div className="controls">
+          <button className="demo-btn" onClick={toggleDemo}>
+            {demoActive ? 'STOP DEMO' : 'RUN DEMO'}
+          </button>
           <label className="zoom-control">
             Zoom:
             <input
@@ -85,45 +96,25 @@ function App() {
             />
             {zoom}x
           </label>
-          <span className={`status-dot ${status}`} title={status} />
+          <StatusDot status={status} />
         </div>
       </header>
-
-      <main className="canvas-container">
-        <canvas ref={canvasRef} id="game-canvas" />
-      </main>
-
+      <div className="canvas-container">
+        <canvas ref={canvasRef} />
+        <div className="vignette" />
+      </div>
       <footer className="status-bar">
-        {(['scout', 'architect', 'builder', 'reviewer'] as const).map((role) => (
-          <span key={role} className="agent-status" style={{ color: GLOW_COLORS[role] }}>
+        {ROLES.map((role) => (
+          <span key={role} className="agent-status" style={{ color: AGENT_COLORS[role] }}>
             {role}: {agentStates[role]}
           </span>
         ))}
-        {demoActive && <span className="demo-indicator">DEMO</span>}
+        {demoActive && <span className="agent-status demo-label">DEMO</span>}
       </footer>
     </div>
   );
 }
 
-function useAgentStates(events: Array<{ type: string; agent?: string; activity?: string; agents?: Record<string, string> }>) {
-  const states: Record<AgentRole, string> = {
-    scout: 'idle',
-    architect: 'idle',
-    builder: 'idle',
-    reviewer: 'idle',
-  };
-
-  for (const event of events) {
-    if (event.type === 'state:snapshot' && event.agents) {
-      Object.assign(states, event.agents);
-    } else if (event.type === 'agent:active' && event.agent) {
-      states[event.agent as AgentRole] = event.activity ?? 'active';
-    } else if (event.type === 'agent:idle' && event.agent) {
-      states[event.agent as AgentRole] = 'idle';
-    }
-  }
-
-  return states;
+function StatusDot({ status }: { status: ConnectionStatus }) {
+  return <span className={`status-dot ${status}`} />;
 }
-
-export default App;

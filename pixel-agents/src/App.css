@@ -1,12 +1,13 @@
 :root {
-  --bg-primary: #0a0a1a;
-  --bg-secondary: #12122a;
-  --text-primary: #e0e0ff;
-  --text-secondary: #8888aa;
+  --bg-primary: #3d3d44;
+  --bg-secondary: #4a4a52;
+  --text-primary: #e8e0d8;
+  --text-secondary: #9a9088;
   --accent-cyan: #00ffff;
   --accent-green: #00ff41;
   --accent-gold: #ffd700;
   --accent-magenta: #ff00ff;
+  --border: #5a5a62;
 }
 
 * {
@@ -33,7 +34,7 @@ body {
   justify-content: space-between;
   padding: 8px 16px;
   background: var(--bg-secondary);
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border);
 }
 
 .header h1 {
@@ -42,26 +43,7 @@ body {
   letter-spacing: 1px;
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.canvas-container {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-canvas {
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
-}
-
-.header-controls {
+.controls {
   display: flex;
   align-items: center;
   gap: 16px;
@@ -80,17 +62,45 @@ canvas {
   accent-color: var(--accent-cyan);
 }
 
+.canvas-container {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.4) 100%);
+  z-index: 1;
+}
+
 .status-bar {
   display: flex;
   gap: 24px;
   padding: 8px 16px;
   background: var(--bg-secondary);
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border);
   font-size: 12px;
 }
 
 .agent-status {
   text-transform: capitalize;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
 }
 
 .status-dot.connected {
@@ -125,11 +135,19 @@ canvas {
   background: rgba(0, 255, 255, 0.1);
 }
 
-.demo-indicator {
+.demo-label {
   color: var(--accent-cyan);
   font-weight: bold;
   letter-spacing: 2px;
   animation: pulse 1s ease-in-out infinite;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Courier New', monospace;
+  color: var(--text-secondary);
 }
 
 @keyframes pulse {
