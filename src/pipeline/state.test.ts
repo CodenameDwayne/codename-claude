@@ -29,16 +29,16 @@ describe('PipelineState', () => {
     const state: PipelineState = {
       project: TEST_DIR,
       task: 'build something',
-      pipeline: ['architect', 'builder', 'reviewer'],
+      agentPipeline: ['scout', 'architect'],
       status: 'running',
-      currentStage: 0,
+      phase: 'planning',
       startedAt: Date.now(),
       updatedAt: Date.now(),
-      stages: [
-        { agent: 'architect', status: 'running' },
-        { agent: 'builder', status: 'pending' },
-        { agent: 'reviewer', status: 'pending' },
+      tasks: [
+        { title: 'Set up project', status: 'pending', attempts: 0 },
       ],
+      currentTaskIndex: 0,
+      totalIterations: 0,
       retries: 0,
     };
 
@@ -47,8 +47,32 @@ describe('PipelineState', () => {
 
     expect(read).not.toBeNull();
     expect(read!.project).toBe(TEST_DIR);
-    expect(read!.pipeline).toEqual(['architect', 'builder', 'reviewer']);
-    expect(read!.stages).toHaveLength(3);
+    expect(read!.agentPipeline).toEqual(['scout', 'architect']);
+    expect(read!.tasks).toHaveLength(1);
+  });
+
+  test('roundtrips Ralph-style pipeline state with TaskProgress', async () => {
+    const state: PipelineState = {
+      project: TEST_DIR,
+      task: 'build feature',
+      agentPipeline: ['scout', 'architect'],
+      status: 'running',
+      phase: 'building',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      tasks: [
+        { title: 'Set up project', status: 'completed', attempts: 1, completedAt: Date.now() },
+        { title: 'Add auth module', status: 'in_progress', attempts: 1 },
+        { title: 'Add tests', status: 'pending', attempts: 0 },
+      ],
+      currentTaskIndex: 1,
+      totalIterations: 3,
+      retries: 0,
+    };
+
+    await writePipelineState(TEST_DIR, state);
+    const loaded = await readPipelineState(TEST_DIR);
+    expect(loaded).toEqual(state);
   });
 
   test('REVIEW_JSON_SCHEMA includes critical severity', () => {

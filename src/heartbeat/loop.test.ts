@@ -188,15 +188,16 @@ describe('HeartbeatLoop', () => {
     const staleState = {
       project: projectDir,
       task: 'build something',
-      pipeline: ['builder', 'reviewer'],
+      agentPipeline: ['builder', 'reviewer'],
       status: 'running',
-      currentStage: 0,
+      phase: 'building',
       startedAt: now - 60 * 60 * 1000, // 1 hour ago
       updatedAt: now - 45 * 60 * 1000, // 45 min ago (stale)
-      stages: [
-        { agent: 'builder', status: 'running', startedAt: now - 45 * 60 * 1000 },
-        { agent: 'reviewer', status: 'pending' },
+      tasks: [
+        { title: 'Implement feature', status: 'in_progress', attempts: 1 },
       ],
+      currentTaskIndex: 0,
+      totalIterations: 1,
       retries: 0,
     };
 

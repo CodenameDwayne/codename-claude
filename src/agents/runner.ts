@@ -224,17 +224,28 @@ async function buildSystemPrompt(
   // 6. Pipeline state (engine-managed)
   const pipelineState = await readPipelineState(projectPath);
   if (pipelineState) {
-    const completedStages = pipelineState.stages
-      .filter(s => s.status === 'completed')
-      .map(s => `- ${s.agent}: completed, validation ${s.validation ?? 'n/a'}`)
+    const completedTasks = pipelineState.tasks
+      .filter(t => t.status === 'completed')
+      .map(t => `- [x] ${t.title}`)
+      .join('\n');
+    const pendingTasks = pipelineState.tasks
+      .filter(t => t.status !== 'completed')
+      .map(t => `- [ ] ${t.title}`)
       .join('\n');
 
+    const currentTask = pipelineState.currentTaskIndex >= 0
+      ? pipelineState.tasks[pipelineState.currentTaskIndex]?.title ?? 'unknown'
+      : 'none';
+
     const stateSection = [
-      `Pipeline: ${pipelineState.pipeline.join(' → ')}`,
+      `Phase: ${pipelineState.phase}`,
       `Status: ${pipelineState.status}`,
-      `Current Stage: ${pipelineState.currentStage + 1}/${pipelineState.pipeline.length}`,
+      `Tasks: ${pipelineState.tasks.filter(t => t.status === 'completed').length}/${pipelineState.tasks.length} completed`,
+      `Current task: ${currentTask}`,
+      `Iterations: ${pipelineState.totalIterations}`,
       `Retries: ${pipelineState.retries}`,
-      completedStages ? `\nCompleted stages:\n${completedStages}` : '',
+      completedTasks ? `\nCompleted:\n${completedTasks}` : '',
+      pendingTasks ? `\nPending:\n${pendingTasks}` : '',
     ].filter(Boolean).join('\n');
 
     sections.push(`---\n\n# Pipeline State\n\n${stateSection}`);

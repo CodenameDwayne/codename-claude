@@ -1,143 +1,67 @@
 import { describe, test, expect } from 'vitest';
-import { parsePlanTasks, expandStagesWithBatches } from './orchestrator.js';
-import type { PipelineStage } from './router.js';
+import { parseCheckboxTasks, markTaskComplete, findNextTask } from './orchestrator.js';
 
-describe('parsePlanTasks', () => {
-  test('extracts task numbers and titles from PLAN.md content', () => {
-    const plan = `# Implementation Plan
-
-## Architecture
-Some architecture notes.
-
-### Task 1: Set up project structure
-Step 1: Create directories...
-
-### Task 2: Implement auth module
-Step 1: Write login function...
-
-### Task 3: Add database layer
-Step 1: Configure connection...
-`;
-
-    const tasks = parsePlanTasks(plan);
-
+describe('parseCheckboxTasks', () => {
+  test('extracts unchecked tasks from plan', () => {
+    const plan = `# Plan\n\n## Tasks\n\n- [ ] Set up project\n- [ ] Add auth\n- [ ] Add tests\n`;
+    const tasks = parseCheckboxTasks(plan);
     expect(tasks).toEqual([
-      { number: 1, title: 'Set up project structure' },
-      { number: 2, title: 'Implement auth module' },
-      { number: 3, title: 'Add database layer' },
+      { title: 'Set up project', checked: false },
+      { title: 'Add auth', checked: false },
+      { title: 'Add tests', checked: false },
     ]);
   });
 
-  test('returns empty array when no tasks found', () => {
-    const plan = '# Plan\n\nJust some notes, no tasks.';
-    expect(parsePlanTasks(plan)).toEqual([]);
+  test('distinguishes checked and unchecked tasks', () => {
+    const plan = `- [x] Done task\n- [ ] Pending task\n- [x] Another done\n`;
+    const tasks = parseCheckboxTasks(plan);
+    expect(tasks).toEqual([
+      { title: 'Done task', checked: true },
+      { title: 'Pending task', checked: false },
+      { title: 'Another done', checked: true },
+    ]);
   });
 
-  test('handles task headings with varied formatting', () => {
-    const plan = `### Task 1: First thing
-### Task 2:  Extra spaces
-###  Task 3: Leading space in heading
-`;
-    const tasks = parsePlanTasks(plan);
-    expect(tasks).toHaveLength(3);
-    expect(tasks[0]!.title).toBe('First thing');
-    expect(tasks[1]!.title).toBe('Extra spaces');
-    expect(tasks[2]!.title).toBe('Leading space in heading');
+  test('returns empty array when no checkboxes found', () => {
+    const plan = `# Plan\n\nJust some text, no tasks.\n`;
+    expect(parseCheckboxTasks(plan)).toEqual([]);
+  });
+
+  test('handles tasks with colons and special characters', () => {
+    const plan = `- [ ] Set up project: directories, configs\n- [ ] Add auth (JWT + sessions)\n`;
+    const tasks = parseCheckboxTasks(plan);
+    expect(tasks).toHaveLength(2);
+    expect(tasks[0]!.title).toBe('Set up project: directories, configs');
   });
 });
 
-describe('expandStagesWithBatches', () => {
-  test('expands builder+reviewer into batched pairs for 7 tasks (batch size 3)', () => {
-    const stages: PipelineStage[] = [
-      { agent: 'architect', teams: false },
-      { agent: 'builder', teams: false },
-      { agent: 'reviewer', teams: false },
-    ];
-
-    const expanded = expandStagesWithBatches(stages, 7, 'builder');
-
-    // 7 tasks / batch of 3 = batches [1-3], [4-6], [7]
-    expect(expanded).toEqual([
-      { agent: 'architect', teams: false },
-      { agent: 'builder', teams: false, batchScope: 'Tasks 1-3' },
-      { agent: 'reviewer', teams: false, batchScope: 'Tasks 1-3' },
-      { agent: 'builder', teams: false, batchScope: 'Tasks 4-6' },
-      { agent: 'reviewer', teams: false, batchScope: 'Tasks 4-6' },
-      { agent: 'builder', teams: false, batchScope: 'Task 7' },
-      { agent: 'reviewer', teams: false, batchScope: 'Task 7' },
-    ]);
+describe('markTaskComplete', () => {
+  test('checks off a specific task by title', () => {
+    const plan = `- [ ] Task A\n- [ ] Task B\n- [ ] Task C\n`;
+    const updated = markTaskComplete(plan, 'Task B');
+    expect(updated).toBe(`- [ ] Task A\n- [x] Task B\n- [ ] Task C\n`);
   });
 
-  test('returns stages unchanged when taskCount is 0', () => {
-    const stages: PipelineStage[] = [
-      { agent: 'architect', teams: false },
-      { agent: 'builder', teams: false },
-      { agent: 'reviewer', teams: false },
-    ];
+  test('does not modify already-checked tasks', () => {
+    const plan = `- [x] Task A\n- [ ] Task B\n`;
+    const updated = markTaskComplete(plan, 'Task A');
+    expect(updated).toBe(plan);
+  });
+});
 
-    const expanded = expandStagesWithBatches(stages, 0, 'builder');
-    expect(expanded).toEqual(stages);
+describe('findNextTask', () => {
+  test('returns first unchecked task', () => {
+    const plan = `- [x] Done\n- [ ] Next one\n- [ ] After\n`;
+    const next = findNextTask(plan);
+    expect(next).toBe('Next one');
   });
 
-  test('handles exact batch size (3 tasks, batch size 3)', () => {
-    const stages: PipelineStage[] = [
-      { agent: 'builder', teams: false },
-      { agent: 'reviewer', teams: false },
-    ];
-
-    const expanded = expandStagesWithBatches(stages, 3, 'builder');
-
-    expect(expanded).toEqual([
-      { agent: 'builder', teams: false, batchScope: 'Tasks 1-3' },
-      { agent: 'reviewer', teams: false, batchScope: 'Tasks 1-3' },
-    ]);
+  test('returns null when all tasks are checked', () => {
+    const plan = `- [x] Done\n- [x] Also done\n`;
+    expect(findNextTask(plan)).toBeNull();
   });
 
-  test('uses custom batch size', () => {
-    const stages: PipelineStage[] = [
-      { agent: 'builder', teams: false },
-      { agent: 'reviewer', teams: false },
-    ];
-
-    const expanded = expandStagesWithBatches(stages, 5, 'builder', 2);
-
-    // 5 tasks / batch of 2 = [1-2], [3-4], [5]
-    expect(expanded).toEqual([
-      { agent: 'builder', teams: false, batchScope: 'Tasks 1-2' },
-      { agent: 'reviewer', teams: false, batchScope: 'Tasks 1-2' },
-      { agent: 'builder', teams: false, batchScope: 'Tasks 3-4' },
-      { agent: 'reviewer', teams: false, batchScope: 'Tasks 3-4' },
-      { agent: 'builder', teams: false, batchScope: 'Task 5' },
-      { agent: 'reviewer', teams: false, batchScope: 'Task 5' },
-    ]);
-  });
-
-  test('preserves stages before expandFrom agent', () => {
-    const stages: PipelineStage[] = [
-      { agent: 'scout', teams: false },
-      { agent: 'architect', teams: false },
-      { agent: 'builder', teams: false },
-      { agent: 'reviewer', teams: false },
-    ];
-
-    const expanded = expandStagesWithBatches(stages, 4, 'builder');
-
-    expect(expanded[0]).toEqual({ agent: 'scout', teams: false });
-    expect(expanded[1]).toEqual({ agent: 'architect', teams: false });
-    expect(expanded[2]!.agent).toBe('builder');
-    expect(expanded[2]!.batchScope).toBe('Tasks 1-3');
-  });
-
-  test('preserves stages after reviewer in batch expansion', () => {
-    const stages: PipelineStage[] = [
-      { agent: 'architect', teams: false },
-      { agent: 'builder', teams: false },
-      { agent: 'reviewer', teams: false },
-      { agent: 'deployer', teams: false },
-    ];
-
-    const result = expandStagesWithBatches(stages, 3, 'builder');
-    const agentNames = result.map(s => s.agent);
-    expect(agentNames[agentNames.length - 1]).toBe('deployer');
+  test('returns null for empty plan', () => {
+    expect(findNextTask('# No tasks here')).toBeNull();
   });
 });
