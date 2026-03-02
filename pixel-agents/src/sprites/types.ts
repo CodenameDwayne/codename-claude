@@ -1,14 +1,11 @@
-import type { Direction } from '../agents/characterState';
-
 /** 2D array of hex color strings. Empty string = transparent. */
 export type SpriteData = string[][];
 
 export interface CharacterSprites {
-  idle: Record<Direction, [SpriteData, SpriteData]>;
-  walk: Record<Direction, [SpriteData, SpriteData, SpriteData, SpriteData]>;
-  work: Record<Direction, [SpriteData, SpriteData]>;
-  carry: Record<Direction, [SpriteData, SpriteData, SpriteData, SpriteData]>;
-  celebrate: [SpriteData, SpriteData];
+  down: { idle: SpriteData[]; walk: SpriteData[] };
+  up: { idle: SpriteData[]; walk: SpriteData[] };
+  right: { idle: SpriteData[]; walk: SpriteData[] };
+  left: { idle: SpriteData[]; walk: SpriteData[] };
 }
 
 export interface CharacterPalette {
