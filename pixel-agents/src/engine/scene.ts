@@ -8,6 +8,7 @@ import {
   renderTilemap,
   renderScene,
   renderLabels,
+  renderBubbles,
   renderPipelineLabel,
 } from './renderer';
 import type { RenderContext } from './renderer';
@@ -98,7 +99,10 @@ export class GameScene {
     // 3. Labels on top
     renderLabels(rc, this.characters, AGENT_COLORS);
 
-    // 4. Pipeline label
+    // 4. Speech bubbles above working characters
+    renderBubbles(rc, this.characters);
+
+    // 5. Pipeline label
     renderPipelineLabel(rc, this.theme.map, this.pipelineLabel);
   }
 

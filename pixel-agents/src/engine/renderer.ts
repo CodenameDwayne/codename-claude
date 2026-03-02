@@ -7,6 +7,7 @@ import type { Theme } from '../themes/types';
 import type { AgentRole } from '../ws/types';
 import { getCachedCanvas } from '../sprites/cache';
 import { getTileSprite } from '../sprites/tileset';
+import { BUBBLE_WORKING, BUBBLE_WAITING } from '../sprites/bubbles';
 
 export interface RenderContext {
   canvas: HTMLCanvasElement;
@@ -167,6 +168,29 @@ export function renderLabels(
     const py = (char.pos.y - 4) * z - rc.camera.y;
     rc.ctx.fillStyle = colors[role] ?? '#ffffff';
     rc.ctx.fillText(role, px, py);
+  }
+}
+
+const BUBBLE_OFFSET_Y = 24; // pixels above character head
+
+/** Render speech bubbles above working/celebrating characters. */
+export function renderBubbles(
+  rc: RenderContext,
+  characters: Map<AgentRole, Character>,
+): void {
+  for (const [, char] of characters) {
+    let bubble: SpriteData | null = null;
+    if (char.state.state === 'working') {
+      bubble = BUBBLE_WORKING;
+    } else if (char.state.state === 'celebrating') {
+      bubble = BUBBLE_WAITING;
+    }
+    if (!bubble) continue;
+
+    const bw = bubble[0]!.length;
+    const worldX = char.pos.x + (TILE_SIZE - bw) / 2;
+    const worldY = char.pos.y - BUBBLE_OFFSET_Y;
+    drawSprite(rc, bubble, worldX, worldY);
   }
 }
 
