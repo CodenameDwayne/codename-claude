@@ -1,7 +1,12 @@
+// pixel-agents/src/engine/renderer.ts
 import type { Character } from '../agents/characterState';
 import type { TileMap } from './tileMap';
-import { TILE_SIZE } from './tileMap';
-import type { SpriteData } from '../sprites/types';
+import { TileType, TILE_SIZE } from './tileMap';
+import type { SpriteData, TilesetGrid, CharacterSprites } from '../sprites/types';
+import type { Theme, FurniturePlacement } from '../themes/types';
+import type { AgentRole } from '../ws/types';
+import { getCachedCanvas } from '../sprites/cache';
+import { getTileSprite } from '../sprites/tileset';
 
 export interface RenderContext {
   canvas: HTMLCanvasElement;
@@ -10,97 +15,173 @@ export interface RenderContext {
   camera: { x: number; y: number };
 }
 
-export function createRenderContext(canvas: HTMLCanvasElement, zoom: number = 3): RenderContext {
+export function createRenderContext(canvas: HTMLCanvasElement, zoom: number): RenderContext {
   const ctx = canvas.getContext('2d')!;
-  ctx.imageSmoothingEnabled = false; // Crisp pixel art
-  return {
-    canvas,
-    ctx,
-    zoom,
-    camera: { x: 0, y: 0 },
-  };
+  ctx.imageSmoothingEnabled = false;
+  return { canvas, ctx, zoom, camera: { x: 0, y: 0 } };
 }
 
-export function resizeCanvas(rc: RenderContext, map: TileMap): void {
-  const mapWidth = map.width * TILE_SIZE * rc.zoom;
-  const mapHeight = map.height * TILE_SIZE * rc.zoom;
-  rc.canvas.width = mapWidth;
-  rc.canvas.height = mapHeight;
+export function resizeCanvas(rc: RenderContext): void {
+  const parent = rc.canvas.parentElement;
+  if (!parent) return;
+  const dpr = window.devicePixelRatio || 1;
+  rc.canvas.width = parent.clientWidth * dpr;
+  rc.canvas.height = parent.clientHeight * dpr;
   rc.ctx.imageSmoothingEnabled = false;
 }
 
-export function clearCanvas(rc: RenderContext, bgColor: string): void {
-  rc.ctx.fillStyle = bgColor;
+export function clearCanvas(rc: RenderContext, bg: string): void {
+  rc.ctx.fillStyle = bg;
   rc.ctx.fillRect(0, 0, rc.canvas.width, rc.canvas.height);
 }
 
-export function renderSprite(rc: RenderContext, sprite: SpriteData, x: number, y: number): void {
+/** Render floor and wall tiles from the tileset. */
+export function renderTilemap(
+  rc: RenderContext,
+  map: TileMap,
+  tileset: TilesetGrid,
+  theme: Theme,
+): void {
   const z = rc.zoom;
-  for (let row = 0; row < sprite.length; row++) {
-    const rowData = sprite[row]!;
-    for (let col = 0; col < rowData.length; col++) {
-      const color = rowData[col];
-      if (!color) continue; // transparent
-      rc.ctx.fillStyle = color;
-      rc.ctx.fillRect(
-        (x + col) * z - rc.camera.x,
-        (y + row) * z - rc.camera.y,
-        z,
-        z,
-      );
+  const floorSprite = getTileSprite(tileset, theme.floorTile);
+  const wallSprite = getTileSprite(tileset, theme.wallTile);
+  const floorCanvas = getCachedCanvas(floorSprite, z);
+  const wallCanvas = getCachedCanvas(wallSprite, z);
+
+  for (let row = 0; row < map.height; row++) {
+    for (let col = 0; col < map.width; col++) {
+      const tile = map.tiles[row]![col]!;
+      const px = col * TILE_SIZE * z - rc.camera.x;
+      const py = row * TILE_SIZE * z - rc.camera.y;
+
+      if (tile === TileType.Wall) {
+        rc.ctx.drawImage(wallCanvas, px, py);
+      } else {
+        // Everything that's not a wall gets a floor tile underneath
+        rc.ctx.drawImage(floorCanvas, px, py);
+      }
     }
   }
 }
 
-export function renderGlow(rc: RenderContext, x: number, y: number, w: number, h: number, color: string, alpha: number = 0.3): void {
-  const z = rc.zoom;
-  rc.ctx.fillStyle = color;
-  rc.ctx.globalAlpha = alpha;
-  // Glow slightly larger than sprite
-  rc.ctx.fillRect(
-    (x - 1) * z - rc.camera.x,
-    (y - 1) * z - rc.camera.y,
-    (w + 2) * z,
-    (h + 2) * z,
-  );
-  rc.ctx.globalAlpha = 1;
+/** Drawable item for z-sorting. */
+interface ZDrawable {
+  zY: number;
+  draw: () => void;
 }
 
-export function renderText(rc: RenderContext, text: string, x: number, y: number, color: string = '#ffffff'): void {
+/** Render a single sprite at a world position using the cache. */
+function drawSprite(rc: RenderContext, sprite: SpriteData, worldX: number, worldY: number): void {
   const z = rc.zoom;
-  rc.ctx.fillStyle = color;
-  rc.ctx.font = `${8 * z}px 'Courier New', monospace`;
-  rc.ctx.textAlign = 'center';
-  rc.ctx.fillText(text, x * z - rc.camera.x, y * z - rc.camera.y);
+  const canvas = getCachedCanvas(sprite, z);
+  rc.ctx.drawImage(canvas, worldX * z - rc.camera.x, worldY * z - rc.camera.y);
 }
 
-/**
- * Render characters Z-sorted by Y position for correct depth.
- */
-export function renderCharacters(
-  rc: RenderContext,
-  characters: Character[],
-  getSprite: (char: Character) => SpriteData | null,
-  getGlowColor: (role: string) => string,
-): void {
-  // Sort by Y for depth ordering
-  const sorted = [...characters].sort((a, b) => a.pos.y - b.pos.y);
+/** Get the current sprite frame for a character based on state. */
+function getCharacterFrame(
+  sprites: CharacterSprites,
+  char: Character,
+): SpriteData | null {
+  const dir = char.direction;
+  const dirSprites = sprites[dir];
+  if (!dirSprites) return null;
 
-  for (const char of sorted) {
-    const sprite = getSprite(char);
-    if (!sprite) continue;
-
-    const glowColor = getGlowColor(char.role);
-
-    // Render glow underlayer
-    renderGlow(rc, char.pos.x, char.pos.y, sprite[0]?.length ?? 16, sprite.length, glowColor, 0.15);
-
-    // Render sprite
-    renderSprite(rc, sprite, char.pos.x, char.pos.y);
-
-    // Render name label
-    const labelX = char.pos.x + (sprite[0]?.length ?? 16) / 2;
-    const labelY = char.pos.y - 4;
-    renderText(rc, char.role, labelX, labelY, glowColor);
+  const st = char.state;
+  switch (st.state) {
+    case 'idle':
+    case 'celebrating':
+      return dirSprites.idle[char.animFrame % dirSprites.idle.length] ?? null;
+    case 'walking':
+    case 'carrying':
+      return dirSprites.walk[char.animFrame % dirSprites.walk.length] ?? null;
+    case 'working':
+      return dirSprites.idle[char.animFrame % dirSprites.idle.length] ?? null;
+    default:
+      return dirSprites.idle[0] ?? null;
   }
+}
+
+/** Render furniture and characters together with Y-based depth sorting. */
+export function renderScene(
+  rc: RenderContext,
+  tileset: TilesetGrid,
+  theme: Theme,
+  characters: Map<AgentRole, Character>,
+  characterSprites: Record<AgentRole, CharacterSprites>,
+): void {
+  const drawables: ZDrawable[] = [];
+
+  // Add furniture to draw list
+  for (const fp of theme.furniture) {
+    const sprite = getTileSprite(tileset, fp.tile);
+    const worldX = fp.pos.col * TILE_SIZE;
+    const worldY = fp.pos.row * TILE_SIZE;
+    const zY = worldY + TILE_SIZE + (fp.zOffset ?? 0);
+    drawables.push({
+      zY,
+      draw: () => drawSprite(rc, sprite, worldX, worldY),
+    });
+  }
+
+  // Add characters to draw list
+  for (const [role, char] of characters) {
+    const sprites = characterSprites[role];
+    if (!sprites) continue;
+    const frame = getCharacterFrame(sprites, char);
+    if (!frame) continue;
+
+    // Center sprite on tile, offset up so feet align with tile bottom
+    const spriteH = frame.length;
+    const spriteW = frame[0]?.length ?? 0;
+    const worldX = char.pos.x + (TILE_SIZE - spriteW) / 2;
+    const worldY = char.pos.y + TILE_SIZE - spriteH;
+    const zY = char.pos.y + TILE_SIZE + 0.5; // slight offset to render in front of same-row furniture
+
+    drawables.push({
+      zY,
+      draw: () => drawSprite(rc, frame, worldX, worldY),
+    });
+  }
+
+  // Sort by Y (painter's algorithm — further back drawn first)
+  drawables.sort((a, b) => a.zY - b.zY);
+
+  // Draw all
+  for (const d of drawables) {
+    d.draw();
+  }
+}
+
+/** Render agent name labels above characters. */
+export function renderLabels(
+  rc: RenderContext,
+  characters: Map<AgentRole, Character>,
+  colors: Record<AgentRole, string>,
+): void {
+  const z = rc.zoom;
+  rc.ctx.textAlign = 'center';
+  rc.ctx.font = `bold ${Math.max(10, 7 * z)}px 'Courier New', monospace`;
+
+  for (const [role, char] of characters) {
+    const px = (char.pos.x + TILE_SIZE / 2) * z - rc.camera.x;
+    const py = (char.pos.y - 4) * z - rc.camera.y;
+    rc.ctx.fillStyle = colors[role] ?? '#ffffff';
+    rc.ctx.fillText(role, px, py);
+  }
+}
+
+/** Render pipeline label at the bottom of the map. */
+export function renderPipelineLabel(
+  rc: RenderContext,
+  map: TileMap,
+  label: string,
+): void {
+  if (!label) return;
+  const z = rc.zoom;
+  const cx = (map.width * TILE_SIZE * z) / 2 - rc.camera.x;
+  const cy = (map.height * TILE_SIZE - 2) * z - rc.camera.y;
+  rc.ctx.textAlign = 'center';
+  rc.ctx.font = `${8 * z}px 'Courier New', monospace`;
+  rc.ctx.fillStyle = '#888888';
+  rc.ctx.fillText(label, cx, cy);
 }
