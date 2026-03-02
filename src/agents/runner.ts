@@ -5,6 +5,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { readPipelineState, REVIEW_JSON_SCHEMA } from '../pipeline/state.js';
+import type { ActivityTracker } from '../pipeline/engine.js';
 
 // Resolve the native claude binary path once at module load time.
 // Important: `npx tsx` prepends node_modules/.bin to PATH, which may contain
@@ -85,6 +86,8 @@ export interface RunOptions {
   log?: (message: string) => void;
   mode?: 'standalone' | 'team';
   maxTurns?: number;
+  /** Pipeline activity tracker — touched on every SDK message to signal liveness. */
+  activityTracker?: ActivityTracker;
 }
 
 // --- File Readers ---
@@ -323,6 +326,8 @@ export async function runAgent(
   let structuredOutput: unknown | undefined;
   let turnCount = 0;
 
+  const tracker = runOptions.activityTracker;
+
   for await (const message of query({
     prompt: task,
     options: {
@@ -352,6 +357,11 @@ export async function runAgent(
     },
   })) {
     const msg = message as Record<string, unknown>;
+
+    // Touch the activity tracker on every SDK message to signal liveness.
+    // This prevents the pipeline's idle timeout from firing while the agent
+    // is actively working (including waiting for team sub-agents).
+    tracker?.touch();
 
     // Capture session_id from the first message that has one
     if (!sessionId && typeof msg['session_id'] === 'string') {

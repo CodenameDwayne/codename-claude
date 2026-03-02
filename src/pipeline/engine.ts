@@ -619,33 +619,50 @@ export class PipelineEngine {
       touch() { this.lastActivityMs = Date.now(); },
     };
 
-    const result = await Promise.race([
-      this.config.runner(agent, project, stageTask, {
-        mode,
-        hooks: this.config.hooks,
-        log: this.config.log,
-        activityTracker: tracker,
-      }),
-      this.waitForIdle(tracker, agent),
-    ]);
+    // Team mode gets a longer idle timeout since the parent agent naturally
+    // pauses while waiting for sub-agents to complete their work.
+    const timeoutMs = mode === 'team' ? Math.max(this.idleTimeoutMs, 15 * 60_000) : this.idleTimeoutMs;
+    const { promise: idlePromise, cancel: cancelIdle } = this.createIdleWatcher(tracker, agent, timeoutMs);
 
-    return result;
+    try {
+      const result = await Promise.race([
+        this.config.runner(agent, project, stageTask, {
+          mode,
+          hooks: this.config.hooks,
+          log: this.config.log,
+          activityTracker: tracker,
+        }),
+        idlePromise,
+      ]);
+      return result;
+    } finally {
+      // Clean up the interval to prevent leaks when the runner resolves first
+      cancelIdle();
+    }
   }
 
   /**
-   * Returns a promise that rejects when the activity tracker shows no SDK
-   * messages for idleTimeoutMs. Polls every 30 seconds.
+   * Creates an idle watcher that rejects when the activity tracker shows no SDK
+   * messages for the given timeout. Returns a cancel function to clean up the interval.
    */
-  private waitForIdle(tracker: ActivityTracker, agentName: string): Promise<never> {
-    return new Promise<never>((_, reject) => {
-      const interval = setInterval(() => {
+  private createIdleWatcher(
+    tracker: ActivityTracker,
+    agentName: string,
+    timeoutMs: number,
+  ): { promise: Promise<never>; cancel: () => void } {
+    let interval: ReturnType<typeof setInterval>;
+
+    const promise = new Promise<never>((_, reject) => {
+      interval = setInterval(() => {
         const idleMs = Date.now() - tracker.lastActivityMs;
-        if (idleMs >= this.idleTimeoutMs) {
+        if (idleMs >= timeoutMs) {
           clearInterval(interval);
           const idleMin = Math.round(idleMs / 60_000);
           reject(new Error(`STAGE_IDLE: ${agentName} had no activity for ${idleMin}m`));
         }
       }, 30_000);
     });
+
+    return { promise, cancel: () => clearInterval(interval!) };
   }
 }
