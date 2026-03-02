@@ -8,6 +8,7 @@ import {
 } from './loop.js';
 import { CronTrigger, type TriggerConfig } from '../triggers/cron.js';
 import { WorkQueue, type QueueItem } from './queue.js';
+import { EventBus, type PipelineEvent } from '../notifications/events.js';
 
 const TEST_STATE_DIR = join(import.meta.dirname, '../../.test-state/heartbeat');
 const QUEUE_FILE = join(TEST_STATE_DIR, 'queue.json');
@@ -253,5 +254,68 @@ describe('HeartbeatLoop', () => {
 
     loop.stop();
     expect(loop.isRunning()).toBe(false);
+  });
+
+  test('emits budget.low when canRunAgent returns false', async () => {
+    const trigger = makeTrigger();
+    vi.setSystemTime(new Date('2026-02-27T10:01:00.000'));
+
+    const events: PipelineEvent[] = [];
+    const eventBus = new EventBus();
+    eventBus.on('*', (e) => events.push(e));
+
+    const deps = makeDeps({
+      triggers: [trigger],
+      canRunAgent: async () => false,
+      eventBus,
+    });
+    const loop = new HeartbeatLoop(deps);
+    const result = await loop.tick();
+
+    expect(result.action).toBe('queued');
+    const budgetEvents = events.filter(e => e.type === 'budget.low');
+    expect(budgetEvents).toHaveLength(1);
+  });
+
+  test('emits pipeline.stalled when stall detected', async () => {
+    vi.useRealTimers();
+
+    const projectDir = join(TEST_STATE_DIR, 'stall-event-test');
+    await mkdir(join(projectDir, '.brain'), { recursive: true });
+
+    const now = Date.now();
+    const staleState = {
+      project: projectDir,
+      task: 'stalled task',
+      agentPipeline: ['builder'],
+      status: 'running',
+      phase: 'building',
+      startedAt: now - 60 * 60 * 1000,
+      updatedAt: now - 31 * 60 * 1000,
+      tasks: [],
+      currentTaskIndex: -1,
+      totalIterations: 0,
+      retries: 0,
+    };
+    await writeFile(join(projectDir, '.brain', 'pipeline-state.json'), JSON.stringify(staleState));
+
+    const events: PipelineEvent[] = [];
+    const eventBus = new EventBus();
+    eventBus.on('*', (e) => events.push(e));
+
+    const deps = makeDeps({
+      projectPaths: [projectDir],
+      eventBus,
+    });
+
+    vi.useFakeTimers();
+    const loop = new HeartbeatLoop(deps);
+    await loop.tick();
+
+    const stalledEvents = events.filter(e => e.type === 'pipeline.stalled');
+    expect(stalledEvents).toHaveLength(1);
+
+    vi.useRealTimers();
+    await rm(projectDir, { recursive: true, force: true });
   });
 });

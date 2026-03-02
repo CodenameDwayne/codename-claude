@@ -162,6 +162,7 @@ async function cmdStatus(): Promise<void> {
     budgetRemaining: number;
     budgetMax: number;
     queueSize: number;
+    activeSessions: number;
   };
 
   console.log('=== Codename Claude Status ===');
@@ -173,6 +174,7 @@ async function cmdStatus(): Promise<void> {
   console.log(`  Triggers:  ${d.triggers} registered`);
   console.log(`  Budget:    ${d.budgetRemaining}/${d.budgetMax} prompts remaining`);
   console.log(`  Queue:     ${d.queueSize} items pending`);
+  console.log(`  Sessions:  ${d.activeSessions} active`);
   console.log('==============================');
 }
 
@@ -357,6 +359,69 @@ async function cmdQueue(): Promise<void> {
   }
 }
 
+async function cmdSessions(args: string[]): Promise<void> {
+  const sub = args[0] ?? 'list';
+
+  if (sub === 'active') {
+    const response = await send({ type: 'sessions-active' });
+    if (!response.ok) die(response.error);
+    const data = response.data as { sessions: Array<{ sessionId: string; project: string; agent: string; task: string; startedAt: number }> };
+    if (data.sessions.length === 0) {
+      console.log('No active sessions.');
+      return;
+    }
+    console.log(`Active sessions (${data.sessions.length}):\n`);
+    for (const s of data.sessions) {
+      console.log(`  ${s.sessionId.slice(0, 8)}...`);
+      console.log(`    Agent:   ${s.agent}`);
+      console.log(`    Project: ${s.project.split('/').pop()}`);
+      console.log(`    Task:    ${s.task.slice(0, 60)}`);
+      console.log(`    Started: ${formatTimestamp(s.startedAt)}`);
+      console.log('');
+    }
+    return;
+  }
+
+  const response = await send({ type: 'sessions-list' });
+  if (!response.ok) die(response.error);
+  const data = response.data as { sessions: Array<{ sessionId: string; project: string; agent: string; task: string; startedAt: number; completedAt?: number; status: string; verdict?: string; turnCount?: number }> };
+  if (data.sessions.length === 0) {
+    console.log('No sessions recorded.');
+    return;
+  }
+
+  console.log(`Recent sessions (${data.sessions.length}):\n`);
+  for (const s of data.sessions) {
+    const status = s.status === 'active' ? '  ACTIVE' : s.status === 'completed' ? '  done' : '  FAILED';
+    const verdict = s.verdict ? ` [${s.verdict}]` : '';
+    console.log(`  ${s.sessionId.slice(0, 8)}  ${s.agent.padEnd(10)} ${status}${verdict}`);
+    console.log(`    ${s.project.split('/').pop()} — ${s.task.slice(0, 50)}`);
+    console.log(`    ${formatTimestamp(s.startedAt)}${s.completedAt ? ` → ${formatTimestamp(s.completedAt)}` : ''}`);
+    console.log('');
+  }
+}
+
+async function cmdResume(args: string[]): Promise<void> {
+  const sessionId = args[0];
+  if (!sessionId) {
+    die('Usage: codename resume <session-id>\n  Tip: run "codename sessions" to see available session IDs');
+  }
+
+  console.log(`Resuming session ${sessionId}...`);
+  console.log('(Connecting to previous Claude session — you interact directly)\n');
+
+  const claude = spawn('claude', ['--resume', sessionId], {
+    stdio: 'inherit',
+    env: { ...process.env },
+  });
+
+  claude.on('exit', (code) => {
+    process.exit(code ?? 0);
+  });
+
+  await new Promise(() => {});
+}
+
 async function cmdInteractive(args: string[]): Promise<void> {
   const project = args[0];
   if (!project) {
@@ -374,10 +439,23 @@ async function cmdInteractive(args: string[]): Promise<void> {
     }
   }
 
-  console.log(`Starting interactive Codename Claude session for: ${projectPath}`);
-  console.log('(This runs in your terminal — you interact directly)\n');
+  // Show pipeline context so you know what the daemon was working on
+  try {
+    const stateRaw = await readFile(join(projectPath, '.brain', 'pipeline-state.json'), 'utf-8');
+    const state = JSON.parse(stateRaw) as { status: string; phase: string; task: string; tasks: Array<{ title: string; status: string }>; retries: number };
+    const completed = state.tasks.filter(t => t.status === 'completed').length;
+    console.log('=== Pipeline Context ===');
+    console.log(`  Status: ${state.status} (${state.phase})`);
+    console.log(`  Task:   ${state.task.slice(0, 60)}`);
+    console.log(`  Progress: ${completed}/${state.tasks.length} tasks done, ${state.retries} retries`);
+    console.log('========================\n');
+  } catch {
+    // No pipeline state — that's fine, starting fresh
+  }
 
-  // Spawn claude directly in interactive mode with Codename Claude's identity
+  console.log(`Starting interactive Codename Claude session for: ${projectPath}`);
+  console.log('(This runs in your terminal — use Claude Remote Control to connect from your phone)\n');
+
   const identityPrompt = join(CODENAME_HOME, 'identity', 'system-prompt.md');
   const claudeArgs = ['--system-prompt', identityPrompt, '-p', projectPath];
 
@@ -415,6 +493,8 @@ Commands:
   projects remove <path|name>  Unregister a project
   logs                         Tail daemon logs
   queue                        Show work queue
+  sessions [active]            List recent (or active) sessions
+  resume <session-id>          Resume a previous agent session
   interactive <project>        Start interactive session
 `);
     return;
@@ -451,6 +531,12 @@ Commands:
       break;
     case 'queue':
       await cmdQueue();
+      break;
+    case 'sessions':
+      await cmdSessions(args.slice(1));
+      break;
+    case 'resume':
+      await cmdResume(args.slice(1));
       break;
     case 'interactive':
       await cmdInteractive(args.slice(1));

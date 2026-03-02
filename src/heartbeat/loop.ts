@@ -2,6 +2,7 @@ import type { CronTrigger } from '../triggers/cron.js';
 import type { WorkQueue } from './queue.js';
 import type { PipelineResult } from '../pipeline/engine.js';
 import { readPipelineState, writePipelineState } from '../pipeline/state.js';
+import type { EventBus } from '../notifications/events.js';
 
 export interface HeartbeatDeps {
   triggers: CronTrigger[];
@@ -11,6 +12,7 @@ export interface HeartbeatDeps {
   runPipeline: (project: string, task: string, mode: 'standalone' | 'team', agent?: string) => Promise<PipelineResult>;
   log: (message: string) => void;
   projectPaths?: string[];
+  eventBus?: EventBus;
 }
 
 export interface TickResult {
@@ -65,6 +67,14 @@ export class HeartbeatLoop {
           if (staleDuration > STALL_THRESHOLD_MS) {
             this.deps.log(`[heartbeat] tick #${this.tickCount} — stalled pipeline detected in ${projectPath} (${Math.round(staleDuration / 60000)}m since last update)`);
 
+            this.deps.eventBus?.emit({
+              type: 'pipeline.stalled',
+              project: projectPath,
+              task: state.task,
+              stalledMinutes: Math.round(staleDuration / 60000),
+              timestamp: Date.now(),
+            });
+
             state.status = 'stalled';
             state.updatedAt = Date.now();
             await writePipelineState(projectPath, state);
@@ -104,6 +114,13 @@ export class HeartbeatLoop {
           });
           trigger.markFired();
           this.deps.log(`[heartbeat] tick #${this.tickCount} — queued ${config.name} (budget low)`);
+          this.deps.eventBus?.emit({
+            type: 'budget.low',
+            remaining: 0,
+            max: 0,
+            percent: 0,
+            timestamp: Date.now(),
+          });
           return { action: 'queued', triggerName: config.name };
         }
       }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { PipelineEngine, type PipelineRunnerFn } from './engine.js';
 import { readPipelineState } from './state.js';
 import type { PipelineStage } from './router.js';
+import { EventBus, type PipelineEvent } from '../notifications/events.js';
 
 const TEST_PROJECT = join(import.meta.dirname, '../../.test-state/pipeline-test');
 const BRAIN_DIR = join(TEST_PROJECT, '.brain');
@@ -963,5 +964,73 @@ describe('PipelineEngine parseReviewVerdict fail-closed', () => {
 
     expect(result.completed).toBe(false);
     expect(result.finalVerdict).toBe('REVISE');
+  });
+});
+
+describe('PipelineEngine event bus', () => {
+  beforeEach(async () => {
+    await mkdir(BRAIN_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TEST_PROJECT, { recursive: true, force: true });
+  });
+
+  test('emits pipeline.started and pipeline.completed on successful run', async () => {
+    await writePlan(['Do the thing']);
+    const runner = makeRalphRunner(['Do the thing']);
+    const events: PipelineEvent[] = [];
+    const eventBus = new EventBus();
+    eventBus.on('*', (e) => events.push(e));
+
+    const engine = new PipelineEngine({ runner, log: () => {}, eventBus });
+    await engine.run({
+      stages: [{ agent: 'builder', teams: false }, { agent: 'reviewer', teams: false }],
+      project: TEST_PROJECT,
+      task: 'test task',
+    });
+
+    const types = events.map(e => e.type);
+    expect(types).toContain('pipeline.started');
+    expect(types).toContain('pipeline.completed');
+    expect(types.filter(t => t === 'session.started').length).toBeGreaterThanOrEqual(2);
+    expect(types.filter(t => t === 'session.completed').length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('emits review.escalated on REVISE verdict', async () => {
+    let callCount = 0;
+    const runner: PipelineRunnerFn = vi.fn(async (role: string) => {
+      callCount++;
+      if (role === 'architect') {
+        await writePlan(['Fixable task']);
+      }
+      if (role === 'reviewer') {
+        const isRetry = callCount > 4;
+        const review = isRetry
+          ? { verdict: 'APPROVE' as const, score: 9, summary: 'Good', issues: [], patternsCompliance: true }
+          : { verdict: 'REVISE' as const, score: 4, summary: 'Needs work', issues: [{ severity: 'major' as const, description: 'Bug' }], patternsCompliance: false };
+        return { agentName: 'Reviewer', sandboxed: false, mode: 'standalone' as const, turnCount: 1, structuredOutput: review };
+      }
+      return { agentName: role, sandboxed: false, mode: 'standalone' as const, turnCount: 1 };
+    });
+
+    const events: PipelineEvent[] = [];
+    const eventBus = new EventBus();
+    eventBus.on('*', (e) => events.push(e));
+
+    const engine = new PipelineEngine({ runner, log: () => {}, eventBus, maxRetries: 3 });
+    await engine.run({
+      stages: [
+        { agent: 'architect', teams: false },
+        { agent: 'builder', teams: false },
+        { agent: 'reviewer', teams: false },
+      ],
+      project: TEST_PROJECT,
+      task: 'test task',
+    });
+
+    const escalated = events.filter(e => e.type === 'review.escalated');
+    expect(escalated.length).toBeGreaterThanOrEqual(1);
+    expect((escalated[0] as Extract<PipelineEvent, { type: 'review.escalated' }>).verdict).toBe('REVISE');
   });
 });
