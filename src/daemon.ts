@@ -28,6 +28,7 @@ import { SOCKET_PATH_DEFAULT, PID_FILE_DEFAULT } from './ipc/protocol.js';
 import { EventBus } from './notifications/events.js';
 import { createNotificationHandler } from './notifications/macos.js';
 import { SessionTracker } from './notifications/sessions.js';
+import { WSBridgeServer } from './ws/server.js';
 
 // --- Paths ---
 
@@ -52,6 +53,7 @@ export interface DaemonConfig {
   };
   heartbeatIntervalMs?: number;
   webhook?: WebhookConfig;
+  websocket?: { port: number };
   notifications?: {
     enabled: boolean;
     events: string[];
@@ -85,6 +87,7 @@ export async function loadConfig(configPath: string = CONFIG_FILE): Promise<Daem
       },
       heartbeatIntervalMs: parsed.heartbeatIntervalMs,
       webhook: parsed.webhook,
+      websocket: parsed.websocket,
       notifications: parsed.notifications ?? DEFAULT_CONFIG.notifications,
     };
   } catch {
@@ -428,6 +431,14 @@ async function main(): Promise<void> {
   await ipcServer.start();
   log(`  IPC:       ${SOCKET_PATH_DEFAULT}`);
 
+  // Start WebSocket bridge for pixel agents
+  let wsServer: WSBridgeServer | null = null;
+  if (config.websocket) {
+    wsServer = new WSBridgeServer(eventBus, config.websocket, log);
+    const wsPort = await wsServer.start();
+    log(`  WebSocket: ws://127.0.0.1:${wsPort}`);
+  }
+
   // Write PID file
   await mkdir(STATE_DIR, { recursive: true });
   await writeFile(PID_FILE_DEFAULT, String(process.pid));
@@ -450,6 +461,9 @@ async function main(): Promise<void> {
     heartbeat.stop();
     clearInterval(budgetCheckInterval);
     eventBus.removeAllListeners();
+    if (wsServer) {
+      await wsServer.stop();
+    }
     await fileWatcher.stop();
     await ipcServer.stop();
     if (webhookServer) {
