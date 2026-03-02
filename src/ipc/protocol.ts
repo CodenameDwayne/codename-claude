@@ -8,6 +8,8 @@ export type IpcCommand =
   | { type: 'projects-add'; path: string; name?: string }
   | { type: 'projects-remove'; pathOrName: string }
   | { type: 'queue-list' }
+  | { type: 'sessions-list' }
+  | { type: 'sessions-active' }
   | { type: 'shutdown' };
 
 export type IpcResponse =

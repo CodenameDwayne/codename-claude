@@ -25,6 +25,9 @@ import {
 import { IpcServer } from './ipc/server.js';
 import type { IpcCommand, IpcResponse } from './ipc/protocol.js';
 import { SOCKET_PATH_DEFAULT, PID_FILE_DEFAULT } from './ipc/protocol.js';
+import { EventBus } from './notifications/events.js';
+import { createNotificationHandler } from './notifications/macos.js';
+import { SessionTracker } from './notifications/sessions.js';
 
 // --- Paths ---
 
@@ -34,6 +37,7 @@ const STATE_DIR = join(CODENAME_HOME, 'state');
 const BUDGET_FILE = join(STATE_DIR, 'budget.json');
 const PROJECTS_FILE = join(STATE_DIR, 'projects.json');
 const QUEUE_FILE = join(STATE_DIR, 'queue.json');
+const SESSIONS_FILE = join(STATE_DIR, 'sessions.json');
 const AGENTS_DIR = join(CODENAME_HOME, 'agents');
 
 // --- Config ---
@@ -48,6 +52,10 @@ export interface DaemonConfig {
   };
   heartbeatIntervalMs?: number;
   webhook?: WebhookConfig;
+  notifications?: {
+    enabled: boolean;
+    events: string[];
+  };
 }
 
 const DEFAULT_CONFIG: DaemonConfig = {
@@ -57,6 +65,10 @@ const DEFAULT_CONFIG: DaemonConfig = {
     maxPromptsPerWindow: 600,
     reserveForInteractive: 0.3,
     windowHours: 5,
+  },
+  notifications: {
+    enabled: true,
+    events: ['session.started', 'session.completed', 'review.escalated', 'budget.low', 'pipeline.stalled', 'pipeline.completed'],
   },
 };
 
@@ -73,6 +85,7 @@ export async function loadConfig(configPath: string = CONFIG_FILE): Promise<Daem
       },
       heartbeatIntervalMs: parsed.heartbeatIntervalMs,
       webhook: parsed.webhook,
+      notifications: parsed.notifications ?? DEFAULT_CONFIG.notifications,
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -107,6 +120,34 @@ async function main(): Promise<void> {
     windowHours: config.budget.windowHours,
     stateFile: BUDGET_FILE,
   };
+
+  // Event bus — central messaging for notifications and session tracking
+  const eventBus = new EventBus();
+
+  // macOS notifications
+  const notifyConfig = config.notifications ?? DEFAULT_CONFIG.notifications!;
+  const notificationHandler = createNotificationHandler(notifyConfig);
+  eventBus.on('*', notificationHandler);
+
+  // Session tracker
+  const sessionTracker = new SessionTracker(SESSIONS_FILE);
+  await sessionTracker.load();
+
+  eventBus.on('session.started', (event) => {
+    if (event.type === 'session.started' && event.sessionId) {
+      sessionTracker.startSession(event.sessionId, event.project, event.agent, event.task);
+    }
+  });
+  eventBus.on('session.completed', (event) => {
+    if (event.type === 'session.completed' && event.sessionId) {
+      sessionTracker.completeSession(event.sessionId, event.verdict, undefined);
+    }
+  });
+
+  // Log all events
+  eventBus.on('*', (event) => {
+    log(`[event] ${event.type}${('agent' in event && event.agent) ? ` (${event.agent})` : ''}`);
+  });
 
   const triggers = buildTriggers(config, STATE_DIR);
   const queue = new WorkQueue(QUEUE_FILE);
@@ -152,6 +193,7 @@ async function main(): Promise<void> {
       hooks,
     }),
     log,
+    eventBus,
   });
 
   async function readTextFileSafe(path: string): Promise<string> {
@@ -200,9 +242,27 @@ async function main(): Promise<void> {
       runPipeline,
       log,
       projectPaths: [...projectPathsByName.values()],
+      eventBus,
     },
     { intervalMs: config.heartbeatIntervalMs ?? 60_000 },
   );
+
+  // Periodic budget check with accurate numbers
+  const budgetCheckInterval = setInterval(async () => {
+    try {
+      const remaining = await getRemainingBudget(budgetConfig);
+      const percent = Math.round((remaining / config.budget.maxPromptsPerWindow) * 100);
+      if (percent <= 20) {
+        eventBus.emit({
+          type: 'budget.low',
+          remaining,
+          max: config.budget.maxPromptsPerWindow,
+          percent,
+          timestamp: Date.now(),
+        });
+      }
+    } catch { /* non-fatal */ }
+  }, 5 * 60_000);
 
   // Startup banner
   const projects = await listProjects(PROJECTS_FILE);
@@ -287,6 +347,7 @@ async function main(): Promise<void> {
             budgetRemaining,
             budgetMax: config.budget.maxPromptsPerWindow,
             queueSize: queueLen,
+            activeSessions: sessionTracker.getActive().length,
           },
         };
       }
@@ -340,6 +401,16 @@ async function main(): Promise<void> {
         return { ok: true, data: { size: queueLen, items } };
       }
 
+      case 'sessions-list': {
+        const recent = sessionTracker.getRecent(20);
+        return { ok: true, data: { sessions: recent } };
+      }
+
+      case 'sessions-active': {
+        const active = sessionTracker.getActive();
+        return { ok: true, data: { sessions: active } };
+      }
+
       case 'shutdown': {
         log('[ipc] shutdown requested via CLI');
         // Respond first, then shut down
@@ -377,6 +448,8 @@ async function main(): Promise<void> {
     await Promise.race([gracePeriod]);
 
     heartbeat.stop();
+    clearInterval(budgetCheckInterval);
+    eventBus.removeAllListeners();
     await fileWatcher.stop();
     await ipcServer.stop();
     if (webhookServer) {
