@@ -1,14 +1,22 @@
 import { readFile, writeFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PipelineStage } from './router.js';
-import { writePipelineState, type PipelineState, type ReviewOutput } from './state.js';
-import { parsePlanTasks, expandStagesWithBatches } from './orchestrator.js';
+import { writePipelineState, type PipelineState, type TaskProgress, type ReviewOutput } from './state.js';
+import { findNextTask, markTaskComplete, parseCheckboxTasks } from './orchestrator.js';
 import type { RunResult } from '../agents/runner.js';
+
+/** Tracks agent activity — touched on every SDK message to signal liveness. */
+export interface ActivityTracker {
+  touch(): void;
+  lastActivityMs: number;
+}
 
 export interface RunnerOptions {
   mode: 'standalone' | 'team';
   hooks?: unknown;
   log?: (message: string) => void;
+  /** If provided, the runner touches this on every SDK message to signal liveness. */
+  activityTracker?: ActivityTracker;
 }
 
 export type PipelineRunnerFn = (
@@ -23,6 +31,8 @@ export interface PipelineEngineConfig {
   log: (message: string) => void;
   hooks?: unknown;
   maxRetries?: number;
+  /** Idle timeout in ms — stage fails if no SDK activity for this long. Default: 5 minutes. */
+  idleTimeoutMs?: number;
 }
 
 export interface PipelineRunOptions {
@@ -34,26 +44,27 @@ export interface PipelineRunOptions {
 export interface PipelineResult {
   completed: boolean;
   stagesRun: number;
-  teamStagesRun: number;
   retries: number;
   totalTurnCount: number;
   finalVerdict?: string;
-  sessionIds?: Record<string, string>;
+  sessionIds?: string[];
   review?: ReviewOutput;
 }
 
 export class PipelineEngine {
   private config: PipelineEngineConfig;
   private maxRetries: number;
+  private idleTimeoutMs: number;
 
   constructor(config: PipelineEngineConfig) {
     this.config = config;
     this.maxRetries = config.maxRetries ?? 2;
+    this.idleTimeoutMs = config.idleTimeoutMs ?? 5 * 60_000;
   }
 
   async run(options: PipelineRunOptions): Promise<PipelineResult> {
     const { project, task } = options;
-    let stages = [...options.stages];
+    const stages = [...options.stages];
 
     if (stages.length === 0) {
       throw new Error('Pipeline received empty stages array — router returned no stages');
@@ -61,8 +72,6 @@ export class PipelineEngine {
 
     // Ensure .brain/PROJECT.md exists for first-run bootstrap
     await this.ensureProjectContext(project, task);
-
-    const batchRetries = new Map<string, number>();
 
     this.config.log(`[pipeline] Starting pipeline: ${stages.map(s => s.agent).join(' → ')}`);
     this.config.log(`[pipeline] Task: "${task}"`);
@@ -72,228 +81,314 @@ export class PipelineEngine {
     const pipelineState: PipelineState = {
       project,
       task,
-      pipeline: stages.map(s => s.agent),
+      agentPipeline: stages.map(s => s.agent),
       status: 'running',
-      currentStage: 0,
+      phase: 'scouting',
       startedAt: now,
       updatedAt: now,
-      stages: stages.map(s => ({ agent: s.agent, status: 'pending' as const, batchScope: s.batchScope })),
+      tasks: [],
+      currentTaskIndex: -1,
+      totalIterations: 0,
       retries: 0,
     };
     await writePipelineState(project, pipelineState);
 
-    const sessionIds: Record<string, string> = {};
+    const sessionIds: string[] = [];
     let lastReviewOutput: ReviewOutput | undefined;
-    let i = 0;
     let stagesRun = 0;
-    let teamStagesRun = 0;
     let totalTurnCount = 0;
 
-    while (i < stages.length) {
-      const stage = stages[i]!;
+    // ── Phase 1: Run pre-loop agents (scout, architect) sequentially ──
+    for (const stage of stages) {
+      const isBuilder = stage.agent === 'builder' || stage.agent.includes('build');
+      const isReviewer = stage.agent === 'reviewer' || stage.agent.includes('review');
+      if (isBuilder || isReviewer) break; // Enter Ralph loop for builder/reviewer
+
       const mode = stage.teams ? 'team' : 'standalone';
-
-      this.config.log(`[pipeline] Stage ${i + 1}/${stages.length}: Running ${stage.agent} (${mode})`);
-
-      // Update state: stage starting
-      pipelineState.currentStage = i;
-      pipelineState.stages[i]!.status = 'running';
-      pipelineState.stages[i]!.startedAt = Date.now();
+      const phaseLabel = (stage.agent === 'scout' || stage.agent.includes('scout')) ? 'scouting' : 'planning';
+      pipelineState.phase = phaseLabel;
       pipelineState.updatedAt = Date.now();
       await writePipelineState(project, pipelineState);
 
-      const stageBatchKey = stage.batchScope ?? 'global';
-      const currentRetries = batchRetries.get(stageBatchKey) ?? 0;
+      this.config.log(`[pipeline] Phase 1: Running ${stage.agent} (${mode})`);
 
-      const stageTask = this.buildStageTask(stage.agent, task, i, stages, currentRetries);
-
-      const result = await this.config.runner(stage.agent, project, stageTask, {
-        mode,
-        hooks: this.config.hooks,
-        log: this.config.log,
-      });
-
+      const stageTask = this.buildStageTask(stage.agent, task, { retries: 0 });
+      const result = await this.runWithIdleTimeout(stage.agent, project, stageTask, mode);
       stagesRun++;
       totalTurnCount += result.turnCount ?? 0;
-      if (stage.teams) {
-        teamStagesRun++;
-      }
+      if (result.sessionId) sessionIds.push(result.sessionId);
 
-      // Capture session ID
-      if (result.sessionId) {
-        sessionIds[stage.agent] = result.sessionId;
-        pipelineState.stages[i]!.sessionId = result.sessionId;
-      }
-
-      this.config.log(`[pipeline] Stage ${i + 1}/${stages.length}: ${stage.agent} completed`);
-
-      // Pre-validation cleanup for architect: remove leftover PLAN-PART files before validating
+      // Pre-validation cleanup for architect
       if (stage.agent === 'architect' || stage.agent.includes('architect')) {
         await this.cleanupPlanPartFiles(project);
       }
 
-      // Post-stage validation
+      // Validate
       const validationError = await this.validateStage(stage.agent, project, result.structuredOutput);
       if (validationError) {
         this.config.log(`[pipeline] VALIDATION FAILED for ${stage.agent}: ${validationError}`);
-        pipelineState.stages[i]!.status = 'failed';
-        pipelineState.stages[i]!.validation = validationError;
-        pipelineState.stages[i]!.completedAt = Date.now();
         pipelineState.status = 'failed';
+        pipelineState.phase = 'failed';
         pipelineState.error = validationError;
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
-        const totalRetriesOnFail = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
-        return { completed: false, stagesRun, teamStagesRun, retries: totalRetriesOnFail, totalTurnCount, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds, review: lastReviewOutput };
+        return { completed: false, stagesRun, retries: 0, totalTurnCount, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds };
       }
 
-      pipelineState.stages[i]!.status = 'completed';
-      pipelineState.stages[i]!.validation = 'passed';
-      pipelineState.stages[i]!.completedAt = Date.now();
+      this.config.log(`[pipeline] ${stage.agent} passed validation`);
+    }
+
+    // ── Phase 2: Ralph loop — one task at a time ──
+    pipelineState.phase = 'building';
+    let redesignCount = 0;
+    const MAX_REDESIGNS = this.maxRetries;
+
+    // Read initial task list from PLAN.md
+    const planPath = join(project, '.brain', 'PLAN.md');
+    let planContent: string;
+    try {
+      planContent = await readFile(planPath, 'utf-8');
+    } catch {
+      // No builder/reviewer stages means we're done (e.g. scout-only pipeline)
+      pipelineState.status = 'completed';
+      pipelineState.phase = 'completed';
+      pipelineState.finalVerdict = 'APPROVE';
+      pipelineState.updatedAt = Date.now();
+      await writePipelineState(project, pipelineState);
+      return { completed: true, stagesRun, retries: 0, totalTurnCount, finalVerdict: 'APPROVE', sessionIds };
+    }
+
+    // Initialize task progress from checkboxes
+    const checkboxTasks = parseCheckboxTasks(planContent);
+    pipelineState.tasks = checkboxTasks.map(t => ({
+      title: t.title,
+      status: t.checked ? 'completed' as const : 'pending' as const,
+      attempts: 0,
+      completedAt: t.checked ? Date.now() : undefined,
+    }));
+    pipelineState.updatedAt = Date.now();
+    await writePipelineState(project, pipelineState);
+
+    this.config.log(`[pipeline] Ralph loop: ${checkboxTasks.length} tasks found in PLAN.md`);
+
+    // Main Ralph loop
+    while (true) {
+      // Re-read PLAN.md to get current checkbox state
+      try {
+        planContent = await readFile(planPath, 'utf-8');
+      } catch {
+        pipelineState.status = 'failed';
+        pipelineState.phase = 'failed';
+        pipelineState.error = 'PLAN.md disappeared during Ralph loop';
+        pipelineState.updatedAt = Date.now();
+        await writePipelineState(project, pipelineState);
+        return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: 'PLAN_LOST', sessionIds };
+      }
+
+      const nextTaskTitle = findNextTask(planContent);
+      if (!nextTaskTitle) {
+        // All checkboxes checked — pipeline complete
+        break;
+      }
+
+      // Find the corresponding TaskProgress entry
+      const taskIdx = pipelineState.tasks.findIndex(t => t.title === nextTaskTitle);
+      if (taskIdx >= 0) {
+        pipelineState.currentTaskIndex = taskIdx;
+        pipelineState.tasks[taskIdx]!.status = 'in_progress';
+        pipelineState.tasks[taskIdx]!.attempts++;
+      }
+      pipelineState.totalIterations++;
       pipelineState.updatedAt = Date.now();
       await writePipelineState(project, pipelineState);
 
-      this.config.log(`[pipeline] Stage ${i + 1}/${stages.length}: ${stage.agent} passed validation`);
+      this.config.log(`[pipeline] Ralph: Building task "${nextTaskTitle}" (attempt ${pipelineState.tasks[taskIdx]?.attempts ?? 1})`);
 
-      // Orchestrate: after architect completes, read PLAN.md and expand batches
-      if (stage.agent === 'architect' || stage.agent.includes('architect')) {
-        try {
-          const planPath = join(project, '.brain', 'PLAN.md');
-          const planContent = await readFile(planPath, 'utf-8');
-          const tasks = parsePlanTasks(planContent);
-
-          if (tasks.length > 0) {
-            this.config.log(`[pipeline] Orchestrator: found ${tasks.length} tasks in PLAN.md, expanding into batches`);
-            const expanded = expandStagesWithBatches(stages, tasks.length, 'builder');
-            stages = expanded;
-
-            // Rebuild pipeline state for new stages
-            pipelineState.pipeline = stages.map(s => s.agent);
-            pipelineState.stages = stages.map((s, idx) => {
-              if (idx <= i) {
-                return pipelineState.stages[idx] ?? { agent: s.agent, status: 'completed' as const };
-              }
-              return { agent: s.agent, status: 'pending' as const, batchScope: s.batchScope };
-            });
-            pipelineState.updatedAt = Date.now();
-            await writePipelineState(project, pipelineState);
-          }
-        } catch {
-          // No PLAN.md or read error — continue without orchestration
-          this.config.log(`[pipeline] Orchestrator: no PLAN.md found, skipping batch expansion`);
-        }
-
+      // ── Run Builder ──
+      const builderTask = this.buildStageTask('builder', task, {
+        retries: (pipelineState.tasks[taskIdx]?.attempts ?? 1) - 1,
+        currentTaskTitle: nextTaskTitle,
+      });
+      const builderResult = await this.runWithIdleTimeout('builder', project, builderTask, 'standalone');
+      stagesRun++;
+      totalTurnCount += builderResult.turnCount ?? 0;
+      if (builderResult.sessionId) {
+        sessionIds.push(builderResult.sessionId);
+        if (taskIdx >= 0) pipelineState.tasks[taskIdx]!.lastSessionId = builderResult.sessionId;
       }
 
-      // Check review verdict after reviewer stages
-      if (stage.agent === 'reviewer' || stage.agent.includes('review')) {
-        let verdict: string;
+      // Validate builder
+      const builderError = await this.validateStage('builder', project, builderResult.structuredOutput);
+      if (builderError) {
+        this.config.log(`[pipeline] Builder validation failed: ${builderError}`);
+        // Non-fatal for individual task — reviewer will catch it
+      }
 
-        // Prefer structured output over file parsing
-        if (result.structuredOutput && typeof result.structuredOutput === 'object') {
-          const review = result.structuredOutput as ReviewOutput;
-          lastReviewOutput = review;
-          verdict = review.verdict;
-          this.config.log(`[pipeline] Reviewer verdict: ${verdict} (${review.score}/10, ${review.issues.length} issues)`);
-        } else {
-          // Fallback: parse from REVIEW.md (backwards compat)
-          verdict = await this.parseReviewVerdict(project);
-          this.config.log(`[pipeline] Reviewer verdict: ${verdict} (from REVIEW.md fallback)`);
-        }
+      // ── Run Reviewer ──
+      const reviewerTask = this.buildStageTask('reviewer', task, {
+        currentTaskTitle: nextTaskTitle,
+      });
+      const reviewerResult = await this.runWithIdleTimeout('reviewer', project, reviewerTask, 'standalone');
+      stagesRun++;
+      totalTurnCount += reviewerResult.turnCount ?? 0;
+      if (reviewerResult.sessionId) sessionIds.push(reviewerResult.sessionId);
 
-        if (verdict === 'APPROVE') {
-          i++;
-          continue;
-        }
+      // Validate reviewer
+      const reviewerError = await this.validateStage('reviewer', project, reviewerResult.structuredOutput);
+      if (reviewerError) {
+        this.config.log(`[pipeline] Reviewer validation failed: ${reviewerError}`);
+        pipelineState.status = 'failed';
+        pipelineState.phase = 'failed';
+        pipelineState.error = reviewerError;
+        pipelineState.updatedAt = Date.now();
+        await writePipelineState(project, pipelineState);
+        return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: `VALIDATION_FAILED: ${reviewerError}`, sessionIds };
+      }
 
-        // Determine retry key: REDESIGN uses 'global' (restarts from architect),
-        // REVISE uses the batch scope (restarts within a batch)
-        const retryKey = verdict === 'REDESIGN' ? 'global' : (stage.batchScope ?? 'global');
-        const keyRetries = batchRetries.get(retryKey) ?? 0;
+      // ── Parse verdict ──
+      let verdict: string;
+      if (reviewerResult.structuredOutput && typeof reviewerResult.structuredOutput === 'object') {
+        const review = reviewerResult.structuredOutput as ReviewOutput;
+        lastReviewOutput = review;
+        verdict = review.verdict;
+        this.config.log(`[pipeline] Reviewer verdict: ${verdict} (${review.score}/10, ${review.issues.length} issues)`);
+      } else {
+        verdict = await this.parseReviewVerdict(project);
+        this.config.log(`[pipeline] Reviewer verdict: ${verdict} (from REVIEW.md fallback)`);
+      }
 
-        if (keyRetries >= this.maxRetries) {
-          const totalRetries = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
-          this.config.log(`[pipeline] Max retries (${this.maxRetries}) reached for ${retryKey}. Stopping.`);
-          pipelineState.status = 'failed';
-          pipelineState.finalVerdict = verdict;
-          pipelineState.retries = totalRetries;
-          pipelineState.updatedAt = Date.now();
-          await writePipelineState(project, pipelineState);
-          return { completed: false, stagesRun, teamStagesRun, retries: totalRetries, totalTurnCount, finalVerdict: verdict, sessionIds, review: lastReviewOutput };
-        }
+      if (taskIdx >= 0) {
+        pipelineState.tasks[taskIdx]!.lastVerdict = verdict;
+      }
 
-        batchRetries.set(retryKey, keyRetries + 1);
-        const totalRetries = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
-        pipelineState.retries = totalRetries;
+      // ── Handle verdict ──
+      if (verdict === 'APPROVE') {
+        // Mark checkbox in PLAN.md
+        const updatedPlan = markTaskComplete(planContent, nextTaskTitle);
+        await writeFile(planPath, updatedPlan);
 
-        // Write review feedback to .brain/REVIEW.md so retrying agents can read it
-        if (lastReviewOutput) {
-          const reviewMd = [
-            `# Review Feedback (Retry ${totalRetries})`,
-            '',
-            `**Verdict:** ${lastReviewOutput.verdict}`,
-            `**Score:** ${lastReviewOutput.score}/10`,
-            `**Summary:** ${lastReviewOutput.summary}`,
-            '',
-            '## Issues to Fix',
-            '',
-            ...lastReviewOutput.issues.map(
-              (issue, idx) => `${idx + 1}. **[${issue.severity}]** ${issue.description}${issue.file ? ` (${issue.file})` : ''}`
-            ),
-          ].join('\n');
-          await mkdir(join(project, '.brain'), { recursive: true });
-          await writeFile(join(project, '.brain', 'REVIEW.md'), reviewMd);
-          this.config.log(`[pipeline] Wrote review feedback to .brain/REVIEW.md for retry`);
-        }
-
-        if (verdict === 'REDESIGN') {
-          const architectIdx = stages.findIndex(s => s.agent === 'architect' || s.agent.includes('architect'));
-          const restartIdx = architectIdx >= 0 ? architectIdx : 0;
-          this.config.log(`[pipeline] Reviewer verdict: REDESIGN — restarting from ${stages[restartIdx]!.agent} (retry ${totalRetries})`);
-          const globalRetries = batchRetries.get('global') ?? 0;
-          batchRetries.clear();
-          if (globalRetries > 0) batchRetries.set('global', globalRetries);
-          for (let j = restartIdx; j < stages.length; j++) {
-            pipelineState.stages[j]!.status = 'pending';
-            pipelineState.stages[j]!.startedAt = undefined;
-            pipelineState.stages[j]!.completedAt = undefined;
-            pipelineState.stages[j]!.validation = undefined;
-          }
-          pipelineState.updatedAt = Date.now();
-          await writePipelineState(project, pipelineState);
-          i = restartIdx;
-          continue;
-        }
-
-        // REVISE
-        const builderIdx = stages.slice(0, i).reverse().findIndex(s => s.agent === 'builder' || s.agent.includes('build'));
-        const restartIdx = builderIdx >= 0 ? i - 1 - builderIdx : Math.max(0, i - 1);
-        this.config.log(`[pipeline] Reviewer verdict: REVISE — re-running ${stages[restartIdx]!.agent} (retry ${totalRetries})`);
-        for (let j = restartIdx; j < stages.length; j++) {
-          pipelineState.stages[j]!.status = 'pending';
-          pipelineState.stages[j]!.startedAt = undefined;
-          pipelineState.stages[j]!.completedAt = undefined;
-          pipelineState.stages[j]!.validation = undefined;
+        if (taskIdx >= 0) {
+          pipelineState.tasks[taskIdx]!.status = 'completed';
+          pipelineState.tasks[taskIdx]!.completedAt = Date.now();
         }
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
-        i = restartIdx;
+        this.config.log(`[pipeline] Ralph: Task "${nextTaskTitle}" APPROVED — checkbox marked`);
         continue;
       }
 
-      i++;
+      // Write review feedback for retry
+      if (lastReviewOutput) {
+        const reviewMd = [
+          `# Review Feedback`,
+          '',
+          `**Verdict:** ${lastReviewOutput.verdict}`,
+          `**Score:** ${lastReviewOutput.score}/10`,
+          `**Summary:** ${lastReviewOutput.summary}`,
+          '',
+          '## Issues to Fix',
+          '',
+          ...lastReviewOutput.issues.map(
+            (issue, idx) => `${idx + 1}. **[${issue.severity}]** ${issue.description}${issue.file ? ` (${issue.file})` : ''}`
+          ),
+        ].join('\n');
+        await mkdir(join(project, '.brain'), { recursive: true });
+        await writeFile(join(project, '.brain', 'REVIEW.md'), reviewMd);
+      }
+
+      if (verdict === 'REVISE') {
+        // Check per-task retry limit
+        const attempts = pipelineState.tasks[taskIdx]?.attempts ?? 1;
+        if (attempts >= this.maxRetries + 1) {
+          this.config.log(`[pipeline] Max retries (${this.maxRetries}) reached for "${nextTaskTitle}". Stopping.`);
+          if (taskIdx >= 0) pipelineState.tasks[taskIdx]!.status = 'failed';
+          pipelineState.status = 'failed';
+          pipelineState.phase = 'failed';
+          pipelineState.finalVerdict = 'REVISE';
+          pipelineState.retries++;
+          pipelineState.updatedAt = Date.now();
+          await writePipelineState(project, pipelineState);
+          return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: 'REVISE', sessionIds, review: lastReviewOutput };
+        }
+
+        pipelineState.retries++;
+        pipelineState.updatedAt = Date.now();
+        await writePipelineState(project, pipelineState);
+        this.config.log(`[pipeline] Ralph: REVISE — retrying "${nextTaskTitle}" (attempt ${attempts + 1})`);
+        continue; // Loop picks up the same unchecked task
+      }
+
+      if (verdict === 'REDESIGN') {
+        redesignCount++;
+        if (redesignCount > MAX_REDESIGNS) {
+          this.config.log(`[pipeline] Max redesigns (${MAX_REDESIGNS}) reached. Stopping.`);
+          pipelineState.status = 'failed';
+          pipelineState.phase = 'failed';
+          pipelineState.finalVerdict = 'REDESIGN';
+          pipelineState.retries++;
+          pipelineState.updatedAt = Date.now();
+          await writePipelineState(project, pipelineState);
+          return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: 'REDESIGN', sessionIds, review: lastReviewOutput };
+        }
+
+        this.config.log(`[pipeline] Ralph: REDESIGN — re-running architect (redesign ${redesignCount})`);
+        pipelineState.phase = 'planning';
+        pipelineState.retries++;
+        pipelineState.updatedAt = Date.now();
+        await writePipelineState(project, pipelineState);
+
+        // Re-run architect
+        const architectTask = this.buildStageTask('architect', task, { retries: redesignCount });
+        const architectResult = await this.runWithIdleTimeout('architect', project, architectTask, 'standalone');
+        stagesRun++;
+        totalTurnCount += architectResult.turnCount ?? 0;
+        if (architectResult.sessionId) sessionIds.push(architectResult.sessionId);
+
+        await this.cleanupPlanPartFiles(project);
+
+        const archError = await this.validateStage('architect', project, architectResult.structuredOutput);
+        if (archError) {
+          pipelineState.status = 'failed';
+          pipelineState.phase = 'failed';
+          pipelineState.error = archError;
+          pipelineState.updatedAt = Date.now();
+          await writePipelineState(project, pipelineState);
+          return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: `VALIDATION_FAILED: ${archError}`, sessionIds };
+        }
+
+        // Re-parse fresh plan
+        planContent = await readFile(planPath, 'utf-8');
+        const freshTasks = parseCheckboxTasks(planContent);
+        pipelineState.tasks = freshTasks.map(t => ({
+          title: t.title,
+          status: 'pending' as const,
+          attempts: 0,
+        }));
+        pipelineState.currentTaskIndex = -1;
+        pipelineState.phase = 'building';
+        pipelineState.updatedAt = Date.now();
+        await writePipelineState(project, pipelineState);
+
+        this.config.log(`[pipeline] Ralph: Architect produced ${freshTasks.length} fresh tasks after REDESIGN`);
+        continue;
+      }
+
+      // Unknown verdict — treat as REVISE
+      this.config.log(`[pipeline] Unknown verdict "${verdict}" — treating as REVISE`);
+      pipelineState.retries++;
+      pipelineState.updatedAt = Date.now();
+      await writePipelineState(project, pipelineState);
     }
 
-    const finalTotalRetries = Array.from(batchRetries.values()).reduce((a, b) => a + b, 0);
-    this.config.log(`[pipeline] Pipeline complete (${stagesRun} stages, ${finalTotalRetries} retries)`);
-
-    // Final state
+    // All tasks complete
+    this.config.log(`[pipeline] Pipeline complete (${stagesRun} stages, ${pipelineState.retries} retries)`);
     pipelineState.status = 'completed';
+    pipelineState.phase = 'completed';
     pipelineState.finalVerdict = 'APPROVE';
     pipelineState.updatedAt = Date.now();
     await writePipelineState(project, pipelineState);
 
-    return { completed: true, stagesRun, teamStagesRun, retries: finalTotalRetries, totalTurnCount, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
+    return { completed: true, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
   }
 
   private async ensureProjectContext(project: string, task: string): Promise<void> {
@@ -325,18 +420,10 @@ export class PipelineEngine {
   }
 
   private async validateStage(agent: string, project: string, structuredOutput?: unknown): Promise<string | null> {
-    if (agent === 'scout' || agent.includes('scout')) {
-      return this.validateScout(project);
-    }
-    if (agent === 'architect' || agent.includes('architect')) {
-      return this.validateArchitect(project);
-    }
-    if (agent === 'builder' || agent.includes('build')) {
-      return this.validateBuilder(project);
-    }
-    if (agent === 'reviewer' || agent.includes('review')) {
-      return this.validateReviewer(project, structuredOutput);
-    }
+    if (agent === 'scout' || agent.includes('scout')) return this.validateScout(project);
+    if (agent === 'architect' || agent.includes('architect')) return this.validateArchitect(project);
+    if (agent === 'builder' || agent.includes('build')) return this.validateBuilder(project);
+    if (agent === 'reviewer' || agent.includes('review')) return this.validateReviewer(project, structuredOutput);
     return null;
   }
 
@@ -364,21 +451,14 @@ export class PipelineEngine {
     }
     if (!content.trim()) return 'Architect wrote empty .brain/PLAN.md';
 
-    // Validate task headings exist and are sequential
-    const taskRegex = /^###\s+Task\s+(\d+):/gm;
-    const taskNumbers: number[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = taskRegex.exec(content)) !== null) {
-      taskNumbers.push(parseInt(match[1]!, 10));
+    const tasks = parseCheckboxTasks(content);
+    if (tasks.length === 0) {
+      return 'PLAN.md has no checkbox tasks (expected "- [ ] Task description" format)';
     }
 
-    if (taskNumbers.length > 0) {
-      // Check sequential numbering starting from 1
-      for (let i = 0; i < taskNumbers.length; i++) {
-        if (taskNumbers[i] !== i + 1) {
-          return `PLAN.md has non-sequential task numbering: expected Task ${i + 1}, found Task ${taskNumbers[i]}`;
-        }
-      }
+    const checkedCount = tasks.filter(t => t.checked).length;
+    if (checkedCount > 0) {
+      return `PLAN.md has ${checkedCount} pre-checked tasks — fresh plan should be all unchecked`;
     }
 
     return null;
@@ -470,54 +550,86 @@ export class PipelineEngine {
     }
   }
 
-  private buildStageTask(agent: string, originalTask: string, index: number, stages: PipelineStage[], retries: number = 0): string {
-    // Scout always gets research-specific framing, even at index 0
+  private buildStageTask(
+    agent: string,
+    originalTask: string,
+    options: { retries?: number; currentTaskTitle?: string },
+  ): string {
+    const { retries = 0, currentTaskTitle } = options;
+
     if (agent === 'scout' || agent.includes('scout')) {
       return `Research the following task thoroughly. Follow the research-scan skill. Write your findings to .brain/RESEARCH/ directory — create one markdown file per research topic. Include technology evaluations, API comparisons, best practices, and any other findings relevant to planning. Do NOT write code or make architectural decisions — you ONLY research and document findings. The Architect agent will use your research to create the implementation plan.\n\nTask: ${originalTask}`;
     }
 
-    if (index === 0 && retries === 0) {
-      return originalTask;
-    }
-
-    const prevAgent = stages[index - 1]?.agent ?? 'previous agent';
-
-    if (agent === 'reviewer' || agent.includes('review')) {
-      const scope = stages[index]?.batchScope;
-      const scopeInstruction = scope
-        ? `\n\nIMPORTANT: You are reviewing ${scope} only. Focus your review on the code implementing those specific tasks.`
+    if (agent === 'architect' || agent.includes('architect')) {
+      const redesignInstruction = retries > 0
+        ? `\n\nCRITICAL — REDESIGN: A reviewer rejected the previous architecture. Read .brain/REVIEW.md FIRST for their feedback. Your new plan must address all the reviewer's concerns.`
         : '';
-      return `Review the code written by ${prevAgent} for the following task. Follow the review-loop and review-code skills. Read .brain/PLAN.md to understand what was supposed to be built, then review the actual code. Read .brain/PATTERNS.md and verify the code follows established patterns. Run tests/build. Your final response will be captured as structured JSON. As a backup, also write your verdict to .brain/REVIEW.md with a "Verdict: APPROVE", "Verdict: REVISE", or "Verdict: REDESIGN" line.${scopeInstruction}\n\nTask: ${originalTask}`;
+      return `Design the architecture and create a detailed implementation plan for the following task. Start by reading .brain/RESEARCH/ if it exists — this contains research from the Scout agent. Then follow the plan-feature skill. Write the plan to .brain/PLAN.md using checkbox format:\n\n- [ ] Task description\n- [ ] Another task\n\nEach task should be completable in a single agent session (10-20 minutes). Order tasks by dependency — earlier tasks should not depend on later ones. Write architectural decisions to .brain/DECISIONS.md. Do NOT write any source code, config files, or install dependencies — you ONLY write to .brain/ files.${redesignInstruction}\n\nTask: ${originalTask}`;
     }
 
     if (agent === 'builder' || agent.includes('build')) {
-      const scope = stages[index]?.batchScope;
-      const scopeInstruction = scope
-        ? `\n\nIMPORTANT: You are working on ${scope} only. Read PLAN.md and implement ONLY those tasks. Do not implement tasks outside your batch scope.`
+      const retryInstruction = retries > 0
+        ? `\n\nCRITICAL — RETRY: A previous review found issues. Read .brain/REVIEW.md FIRST and fix all listed issues before doing anything else.`
         : '';
-      const isRetry = retries > 0 && stages.some(
-        (s, idx) => (s.agent === 'reviewer' || s.agent.includes('review')) && idx > index
-      );
-      const retryInstruction = isRetry
-        ? `\n\nCRITICAL — RETRY: A previous review found issues. Read .brain/REVIEW.md FIRST and fix all listed issues before doing anything else. Address every issue mentioned.`
+      const taskInstruction = currentTaskTitle
+        ? `\n\nYOU ARE WORKING ON THIS SPECIFIC TASK: "${currentTaskTitle}"\nImplement ONLY this task. Do not implement other tasks from the plan.`
         : '';
-      return `Implement the following task. Start by reading .brain/PLAN.md — this is your implementation spec from Architect. It contains the architecture, directory structure, ordered tasks, and acceptance criteria. Also read .brain/DECISIONS.md for architectural decisions. Follow the plan step by step. Set up the project from scratch if needed (git init, bun init, bun install, create directories), write all source code, and ensure it builds and runs. Always use bun, not npm.${scopeInstruction}${retryInstruction}\n\nTask: ${originalTask}`;
+      return `Implement a single task from the implementation plan. Start by reading .brain/PLAN.md — this is your spec from Architect. Also read .brain/DECISIONS.md for architectural decisions. Follow the plan step by step. Write source code, write a unit test to verify your work, and ensure it builds. Always use bun, not npm.${taskInstruction}${retryInstruction}\n\nProject task: ${originalTask}`;
     }
 
-    if (agent === 'architect' || agent.includes('architect')) {
-      const isTeamMode = stages[index]?.teams ?? false;
-      const teamInstruction = isTeamMode
-        ? `\n\nCRITICAL — TEAM MODE IS MANDATORY: You are running with Claude Agent Teams enabled. This is NON-NEGOTIABLE — you MUST use the TeamCreate tool to create a planning team, then spawn teammates via the Task tool (with name and team_name parameters) to write plan sections in parallel. Follow the plan-feature-team skill EXACTLY. Do NOT write the plan yourself. Do NOT skip team creation regardless of plan size. The user explicitly requested team mode — if you write PLAN.md directly without creating a team first, you are violating a hard requirement. Your first tool call after reading context and writing DECISIONS.md MUST be TeamCreate.`
+    if (agent === 'reviewer' || agent.includes('review')) {
+      const taskInstruction = currentTaskTitle
+        ? `\n\nYou are reviewing the implementation of: "${currentTaskTitle}". Focus your review on the code implementing this specific task.`
         : '';
-      const isRedesign = retries > 0 && stages.some(
-        s => s.agent === 'reviewer' || s.agent.includes('review')
-      );
-      const redesignInstruction = isRedesign
-        ? `\n\nCRITICAL — REDESIGN: A reviewer rejected the previous architecture. Read .brain/REVIEW.md FIRST for their feedback. Your new plan must address all the reviewer's concerns.`
-        : '';
-      return `Design the architecture and create a detailed implementation plan for the following task. Start by reading .brain/RESEARCH/ if it exists — this contains research from the Scout agent. Then follow the plan-feature skill. Write the plan to .brain/PLAN.md and any architectural decisions to .brain/DECISIONS.md. Do NOT write any source code, config files, or install dependencies — you ONLY write to .brain/ files. The Builder agent will handle all implementation.${redesignInstruction}${teamInstruction}\n\nTask: ${originalTask}`;
+      return `Review the code written by Builder for the following task. Follow the review-loop and review-code skills. Read .brain/PLAN.md to understand what was supposed to be built, then review the actual code. Read .brain/PATTERNS.md and verify the code follows established patterns. Run tests/build. Your final response will be captured as structured JSON. As a backup, also write your verdict to .brain/REVIEW.md with a "Verdict: APPROVE", "Verdict: REVISE", or "Verdict: REDESIGN" line.${taskInstruction}\n\nProject task: ${originalTask}`;
     }
 
     return originalTask;
+  }
+
+  /**
+   * Runs an agent with an activity-based idle timeout. If no SDK messages
+   * arrive for idleTimeoutMs, the stage is considered stuck.
+   */
+  private async runWithIdleTimeout(
+    agent: string,
+    project: string,
+    stageTask: string,
+    mode: 'standalone' | 'team',
+  ): Promise<RunResult> {
+    const tracker: ActivityTracker = {
+      lastActivityMs: Date.now(),
+      touch() { this.lastActivityMs = Date.now(); },
+    };
+
+    const result = await Promise.race([
+      this.config.runner(agent, project, stageTask, {
+        mode,
+        hooks: this.config.hooks,
+        log: this.config.log,
+        activityTracker: tracker,
+      }),
+      this.waitForIdle(tracker, agent),
+    ]);
+
+    return result;
+  }
+
+  /**
+   * Returns a promise that rejects when the activity tracker shows no SDK
+   * messages for idleTimeoutMs. Polls every 30 seconds.
+   */
+  private waitForIdle(tracker: ActivityTracker, agentName: string): Promise<never> {
+    return new Promise<never>((_, reject) => {
+      const interval = setInterval(() => {
+        const idleMs = Date.now() - tracker.lastActivityMs;
+        if (idleMs >= this.idleTimeoutMs) {
+          clearInterval(interval);
+          const idleMin = Math.round(idleMs / 60_000);
+          reject(new Error(`STAGE_IDLE: ${agentName} had no activity for ${idleMin}m`));
+        }
+      }, 30_000);
+    });
   }
 }
