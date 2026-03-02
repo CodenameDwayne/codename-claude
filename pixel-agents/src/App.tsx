@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { useWebSocket } from './ws/useWebSocket';
 import { useGameScene } from './hooks/useGameScene';
 import { cyberpunkTheme } from './themes/cyberpunk';
-import type { AgentRole } from './ws/types';
+import { DemoRunner } from './demo/demoMode';
+import type { AgentRole, WSEvent } from './ws/types';
 import './App.css';
 
 const GLOW_COLORS: Record<AgentRole, string> = {
@@ -15,18 +16,64 @@ const GLOW_COLORS: Record<AgentRole, string> = {
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState(3);
-  const { status, events, latestEvent } = useWebSocket();
+  const [demoActive, setDemoActive] = useState(false);
+  const [demoEvents, setDemoEvents] = useState<WSEvent[]>([]);
+  const demoRunnerRef = useRef<DemoRunner | null>(null);
+  const { status, events } = useWebSocket();
 
-  useGameScene(canvasRef, cyberpunkTheme, events, zoom);
+  // Use WS events when connected, demo events when in demo mode
+  const activeEvents = status === 'connected' ? events : demoEvents;
 
-  // Extract current agent states from events
-  const agentStates = useAgentStates(events);
+  useGameScene(canvasRef, cyberpunkTheme, activeEvents, zoom);
+
+  const agentStates = useAgentStates(activeEvents);
+
+  const pushDemoEvent = useCallback((event: WSEvent) => {
+    setDemoEvents((prev) => [...prev.slice(-99), event]);
+  }, []);
+
+  const toggleDemo = useCallback(() => {
+    if (demoActive) {
+      demoRunnerRef.current?.stop();
+      demoRunnerRef.current = null;
+      setDemoActive(false);
+      setDemoEvents([]);
+    } else {
+      const runner = new DemoRunner();
+      demoRunnerRef.current = runner;
+      setDemoActive(true);
+      setDemoEvents([]);
+      runner.start(pushDemoEvent);
+    }
+  }, [demoActive, pushDemoEvent]);
+
+  // Stop demo when WS connects
+  useEffect(() => {
+    if (status === 'connected' && demoActive) {
+      demoRunnerRef.current?.stop();
+      demoRunnerRef.current = null;
+      setDemoActive(false);
+      setDemoEvents([]);
+    }
+  }, [status, demoActive]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      demoRunnerRef.current?.stop();
+    };
+  }, []);
 
   return (
     <div className="app">
       <header className="header">
         <h1>Codename Claude — Pixel Agents</h1>
         <div className="header-controls">
+          {status !== 'connected' && (
+            <button className="demo-btn" onClick={toggleDemo}>
+              {demoActive ? 'Stop Demo' : 'Run Demo'}
+            </button>
+          )}
           <label className="zoom-control">
             Zoom:
             <input
@@ -52,6 +99,7 @@ function App() {
             {role}: {agentStates[role]}
           </span>
         ))}
+        {demoActive && <span className="demo-indicator">DEMO</span>}
       </footer>
     </div>
   );
