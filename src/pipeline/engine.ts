@@ -4,6 +4,7 @@ import type { PipelineStage } from './router.js';
 import { writePipelineState, type PipelineState, type TaskProgress, type ReviewOutput } from './state.js';
 import { findNextTask, markTaskComplete, parseCheckboxTasks } from './orchestrator.js';
 import type { RunResult } from '../agents/runner.js';
+import type { EventBus } from '../notifications/events.js';
 
 /** Tracks agent activity — touched on every SDK message to signal liveness. */
 export interface ActivityTracker {
@@ -33,6 +34,8 @@ export interface PipelineEngineConfig {
   maxRetries?: number;
   /** Idle timeout in ms — stage fails if no SDK activity for this long. Default: 5 minutes. */
   idleTimeoutMs?: number;
+  /** Optional event bus for notifications and session tracking. */
+  eventBus?: EventBus;
 }
 
 export interface PipelineRunOptions {
@@ -93,6 +96,11 @@ export class PipelineEngine {
     };
     await writePipelineState(project, pipelineState);
 
+    this.config.eventBus?.emit({
+      type: 'pipeline.started', project, task,
+      stages: stages.map(s => s.agent), timestamp: Date.now(),
+    });
+
     const sessionIds: string[] = [];
     let lastReviewOutput: ReviewOutput | undefined;
     let stagesRun = 0;
@@ -113,10 +121,21 @@ export class PipelineEngine {
       this.config.log(`[pipeline] Phase 1: Running ${stage.agent} (${mode})`);
 
       const stageTask = this.buildStageTask(stage.agent, task, { retries: 0 });
+
+      this.config.eventBus?.emit({
+        type: 'session.started', project, agent: stage.agent,
+        task: stageTask, timestamp: Date.now(),
+      });
+
       const result = await this.runWithIdleTimeout(stage.agent, project, stageTask, mode);
       stagesRun++;
       totalTurnCount += result.turnCount ?? 0;
       if (result.sessionId) sessionIds.push(result.sessionId);
+
+      this.config.eventBus?.emit({
+        type: 'session.completed', project, agent: stage.agent,
+        sessionId: result.sessionId, timestamp: Date.now(),
+      });
 
       // Pre-validation cleanup for architect
       if (stage.agent === 'architect' || stage.agent.includes('architect')) {
@@ -132,6 +151,9 @@ export class PipelineEngine {
         pipelineState.error = validationError;
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
+        this.config.eventBus?.emit({
+          type: 'pipeline.completed', project, task, success: false, timestamp: Date.now(),
+        });
         return { completed: false, stagesRun, retries: 0, totalTurnCount, finalVerdict: `VALIDATION_FAILED: ${validationError}`, sessionIds };
       }
 
@@ -170,6 +192,9 @@ export class PipelineEngine {
       pipelineState.error = 'PLAN.md not found — architect must produce .brain/PLAN.md before Ralph loop';
       pipelineState.updatedAt = Date.now();
       await writePipelineState(project, pipelineState);
+      this.config.eventBus?.emit({
+        type: 'pipeline.completed', project, task, success: false, timestamp: Date.now(),
+      });
       return { completed: false, stagesRun, retries: 0, totalTurnCount, finalVerdict: 'VALIDATION_FAILED: PLAN.md not found', sessionIds };
     }
 
@@ -197,6 +222,9 @@ export class PipelineEngine {
         pipelineState.error = 'PLAN.md disappeared during Ralph loop';
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
+        this.config.eventBus?.emit({
+          type: 'pipeline.completed', project, task, success: false, timestamp: Date.now(),
+        });
         return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: 'PLAN_LOST', sessionIds };
       }
 
@@ -224,6 +252,12 @@ export class PipelineEngine {
         retries: (pipelineState.tasks[taskIdx]?.attempts ?? 1) - 1,
         currentTaskTitle: nextTaskTitle,
       });
+
+      this.config.eventBus?.emit({
+        type: 'session.started', project, agent: 'builder',
+        task: builderTask, timestamp: Date.now(),
+      });
+
       const builderResult = await this.runWithIdleTimeout('builder', project, builderTask, 'standalone');
       stagesRun++;
       totalTurnCount += builderResult.turnCount ?? 0;
@@ -231,6 +265,11 @@ export class PipelineEngine {
         sessionIds.push(builderResult.sessionId);
         if (taskIdx >= 0) pipelineState.tasks[taskIdx]!.lastSessionId = builderResult.sessionId;
       }
+
+      this.config.eventBus?.emit({
+        type: 'session.completed', project, agent: 'builder',
+        sessionId: builderResult.sessionId, timestamp: Date.now(),
+      });
 
       // Validate builder
       const builderError = await this.validateStage('builder', project, builderResult.structuredOutput);
@@ -243,6 +282,12 @@ export class PipelineEngine {
       const reviewerTask = this.buildStageTask('reviewer', task, {
         currentTaskTitle: nextTaskTitle,
       });
+
+      this.config.eventBus?.emit({
+        type: 'session.started', project, agent: 'reviewer',
+        task: reviewerTask, timestamp: Date.now(),
+      });
+
       const reviewerResult = await this.runWithIdleTimeout('reviewer', project, reviewerTask, 'standalone');
       stagesRun++;
       totalTurnCount += reviewerResult.turnCount ?? 0;
@@ -257,6 +302,9 @@ export class PipelineEngine {
         pipelineState.error = reviewerError;
         pipelineState.updatedAt = Date.now();
         await writePipelineState(project, pipelineState);
+        this.config.eventBus?.emit({
+          type: 'pipeline.completed', project, task, success: false, timestamp: Date.now(),
+        });
         return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: `VALIDATION_FAILED: ${reviewerError}`, sessionIds };
       }
 
@@ -271,6 +319,12 @@ export class PipelineEngine {
         verdict = await this.parseReviewVerdict(project);
         this.config.log(`[pipeline] Reviewer verdict: ${verdict} (from REVIEW.md fallback)`);
       }
+
+      this.config.eventBus?.emit({
+        type: 'session.completed', project, agent: 'reviewer',
+        sessionId: reviewerResult.sessionId, verdict, score: lastReviewOutput?.score,
+        timestamp: Date.now(),
+      });
 
       if (taskIdx >= 0) {
         pipelineState.tasks[taskIdx]!.lastVerdict = verdict;
@@ -313,6 +367,12 @@ export class PipelineEngine {
       }
 
       if (verdict === 'REVISE') {
+        this.config.eventBus?.emit({
+          type: 'review.escalated', project, taskTitle: nextTaskTitle,
+          verdict: 'REVISE', score: lastReviewOutput?.score,
+          issueCount: lastReviewOutput?.issues.length, timestamp: Date.now(),
+        });
+
         // Check per-task retry limit
         const attempts = pipelineState.tasks[taskIdx]?.attempts ?? 1;
         if (attempts >= this.maxRetries + 1) {
@@ -324,6 +384,9 @@ export class PipelineEngine {
           pipelineState.retries++;
           pipelineState.updatedAt = Date.now();
           await writePipelineState(project, pipelineState);
+          this.config.eventBus?.emit({
+            type: 'pipeline.completed', project, task, success: false, timestamp: Date.now(),
+          });
           return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: 'REVISE', sessionIds, review: lastReviewOutput };
         }
 
@@ -335,6 +398,12 @@ export class PipelineEngine {
       }
 
       if (verdict === 'REDESIGN') {
+        this.config.eventBus?.emit({
+          type: 'review.escalated', project, taskTitle: nextTaskTitle,
+          verdict: 'REDESIGN', score: lastReviewOutput?.score,
+          issueCount: lastReviewOutput?.issues.length, timestamp: Date.now(),
+        });
+
         redesignCount++;
         if (redesignCount > MAX_REDESIGNS) {
           this.config.log(`[pipeline] Max redesigns (${MAX_REDESIGNS}) reached. Stopping.`);
@@ -344,6 +413,9 @@ export class PipelineEngine {
           pipelineState.retries++;
           pipelineState.updatedAt = Date.now();
           await writePipelineState(project, pipelineState);
+          this.config.eventBus?.emit({
+            type: 'pipeline.completed', project, task, success: false, timestamp: Date.now(),
+          });
           return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: 'REDESIGN', sessionIds, review: lastReviewOutput };
         }
 
@@ -369,6 +441,9 @@ export class PipelineEngine {
           pipelineState.error = archError;
           pipelineState.updatedAt = Date.now();
           await writePipelineState(project, pipelineState);
+          this.config.eventBus?.emit({
+            type: 'pipeline.completed', project, task, success: false, timestamp: Date.now(),
+          });
           return { completed: false, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: `VALIDATION_FAILED: ${archError}`, sessionIds };
         }
 
@@ -403,6 +478,10 @@ export class PipelineEngine {
     pipelineState.finalVerdict = 'APPROVE';
     pipelineState.updatedAt = Date.now();
     await writePipelineState(project, pipelineState);
+
+    this.config.eventBus?.emit({
+      type: 'pipeline.completed', project, task, success: true, timestamp: Date.now(),
+    });
 
     return { completed: true, stagesRun, retries: pipelineState.retries, totalTurnCount, finalVerdict: 'APPROVE', sessionIds, review: lastReviewOutput };
   }
