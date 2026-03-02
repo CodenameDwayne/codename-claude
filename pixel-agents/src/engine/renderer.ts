@@ -22,12 +22,13 @@ export function createRenderContext(canvas: HTMLCanvasElement, zoom: number): Re
   return { canvas, ctx, zoom, camera: { x: 0, y: 0 } };
 }
 
-export function resizeCanvas(rc: RenderContext): void {
-  const parent = rc.canvas.parentElement;
-  if (!parent) return;
-  const dpr = window.devicePixelRatio || 1;
-  rc.canvas.width = parent.clientWidth * dpr;
-  rc.canvas.height = parent.clientHeight * dpr;
+export function resizeCanvas(rc: RenderContext, map: TileMap): void {
+  const w = map.width * TILE_SIZE * rc.zoom;
+  const h = map.height * TILE_SIZE * rc.zoom;
+  if (rc.canvas.width !== w || rc.canvas.height !== h) {
+    rc.canvas.width = w;
+    rc.canvas.height = h;
+  }
   rc.ctx.imageSmoothingEnabled = false;
 }
 
@@ -45,18 +46,18 @@ export function renderTilemap(
 ): void {
   const z = rc.zoom;
   const floorSprite = getTileSprite(tileset, theme.floorTile);
-  const wallSprite = getTileSprite(tileset, theme.wallTile);
   const floorCanvas = getCachedCanvas(floorSprite, z);
-  const wallCanvas = getCachedCanvas(wallSprite, z);
+  const sz = TILE_SIZE * z;
 
   for (let row = 0; row < map.height; row++) {
     for (let col = 0; col < map.width; col++) {
       const tile = map.tiles[row]![col]!;
-      const px = col * TILE_SIZE * z - rc.camera.x;
-      const py = row * TILE_SIZE * z - rc.camera.y;
+      const px = col * sz - rc.camera.x;
+      const py = row * sz - rc.camera.y;
 
       if (tile === TileType.Wall) {
-        rc.ctx.drawImage(wallCanvas, px, py);
+        rc.ctx.fillStyle = theme.wallColor;
+        rc.ctx.fillRect(px, py, sz, sz);
       } else {
         // Everything that's not a wall gets a floor tile underneath
         rc.ctx.drawImage(floorCanvas, px, py);

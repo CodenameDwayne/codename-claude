@@ -21,7 +21,7 @@ export interface Theme {
   name: string;
   background: string;
   floorTile: TileName;
-  wallTile: TileName;
+  wallColor: string;
   map: TileMap;
   desks: DeskAssignment[];
   furniture: FurniturePlacement[];

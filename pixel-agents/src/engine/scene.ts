@@ -52,7 +52,7 @@ export class GameScene {
 
   attach(canvas: HTMLCanvasElement, zoom: number): void {
     this.rc = createRenderContext(canvas, zoom);
-    resizeCanvas(this.rc);
+    resizeCanvas(this.rc, this.theme.map);
   }
 
   start(): void {
@@ -87,7 +87,7 @@ export class GameScene {
     if (!this.rc) return;
     const rc = this.rc;
 
-    resizeCanvas(rc);
+    resizeCanvas(rc, this.theme.map);
     clearCanvas(rc, this.theme.background);
 
     // 1. Floor and wall tiles

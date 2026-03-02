@@ -30,8 +30,8 @@ const tiles: TileType[][] = [
 export const officeTheme: Theme = {
   name: 'Office',
   background: '#4a4a52', // dark gray surround
-  floorTile: 'floorDiamond1',
-  wallTile: 'wallTop',
+  floorTile: 'floorPlain',
+  wallColor: '#5b5b6e',
   map: {
     width: 20,
     height: 15,
