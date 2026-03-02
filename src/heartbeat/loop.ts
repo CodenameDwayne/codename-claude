@@ -69,7 +69,7 @@ export class HeartbeatLoop {
             state.updatedAt = Date.now();
             await writePipelineState(projectPath, state);
 
-            const currentAgent = state.pipeline[state.currentStage] ?? 'builder';
+            const currentAgent = state.phase === 'building' ? 'builder' : (state.agentPipeline[0] ?? 'builder');
             await this.deps.queue.enqueue({
               triggerName: 'stall-recovery',
               project: projectPath,
