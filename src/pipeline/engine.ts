@@ -139,6 +139,22 @@ export class PipelineEngine {
     }
 
     // ── Phase 2: Ralph loop — one task at a time ──
+    // Only enter if pipeline includes builder/reviewer stages
+    const hasBuilderReviewer = stages.some(s =>
+      s.agent === 'builder' || s.agent.includes('build') ||
+      s.agent === 'reviewer' || s.agent.includes('review')
+    );
+
+    if (!hasBuilderReviewer) {
+      // Pure pre-loop pipeline (e.g. scout-only, architect-only)
+      pipelineState.status = 'completed';
+      pipelineState.phase = 'completed';
+      pipelineState.finalVerdict = 'APPROVE';
+      pipelineState.updatedAt = Date.now();
+      await writePipelineState(project, pipelineState);
+      return { completed: true, stagesRun, retries: 0, totalTurnCount, finalVerdict: 'APPROVE', sessionIds };
+    }
+
     pipelineState.phase = 'building';
     let redesignCount = 0;
     const MAX_REDESIGNS = this.maxRetries;
@@ -149,13 +165,12 @@ export class PipelineEngine {
     try {
       planContent = await readFile(planPath, 'utf-8');
     } catch {
-      // No builder/reviewer stages means we're done (e.g. scout-only pipeline)
-      pipelineState.status = 'completed';
-      pipelineState.phase = 'completed';
-      pipelineState.finalVerdict = 'APPROVE';
+      pipelineState.status = 'failed';
+      pipelineState.phase = 'failed';
+      pipelineState.error = 'PLAN.md not found — architect must produce .brain/PLAN.md before Ralph loop';
       pipelineState.updatedAt = Date.now();
       await writePipelineState(project, pipelineState);
-      return { completed: true, stagesRun, retries: 0, totalTurnCount, finalVerdict: 'APPROVE', sessionIds };
+      return { completed: false, stagesRun, retries: 0, totalTurnCount, finalVerdict: 'VALIDATION_FAILED: PLAN.md not found', sessionIds };
     }
 
     // Initialize task progress from checkboxes
@@ -294,6 +309,7 @@ export class PipelineEngine {
         ].join('\n');
         await mkdir(join(project, '.brain'), { recursive: true });
         await writeFile(join(project, '.brain', 'REVIEW.md'), reviewMd);
+        this.config.log(`[pipeline] Wrote review feedback to .brain/REVIEW.md for retry`);
       }
 
       if (verdict === 'REVISE') {
