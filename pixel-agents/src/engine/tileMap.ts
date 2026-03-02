@@ -5,6 +5,7 @@ export enum TileType {
   Wall = 1,
   Desk = 2,
   Chair = 3,
+  Furniture = 4,
 }
 
 export interface GridPos {
