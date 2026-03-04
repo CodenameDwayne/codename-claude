@@ -1,40 +1,30 @@
-// pixel-agents/src/App.tsx
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useWebSocket } from './ws/useWebSocket';
 import { useGameScene } from './hooks/useGameScene';
 import { useAssets } from './hooks/useAssets';
+import { useMissionControl } from './hooks/useMissionControl';
 import { officeTheme } from './themes/office';
-import { AGENT_COLORS } from './sprites/characters';
 import { DemoRunner } from './demo/demoMode';
-import type { WSEvent, AgentRole, ConnectionStatus } from './ws/types';
+import { PipelinePanel } from './components/PipelinePanel';
+import { TasksPanel } from './components/TasksPanel';
+import { FooterBar } from './components/FooterBar';
+import { CommandPalette } from './components/CommandPalette';
+import type { WSEvent } from './ws/types';
 import './App.css';
-
-const ROLES: AgentRole[] = ['scout', 'architect', 'builder', 'reviewer'];
-
-function useAgentStates(events: WSEvent[]) {
-  const states = useRef<Record<AgentRole, string>>({
-    scout: 'Idle', architect: 'Idle', builder: 'Idle', reviewer: 'Idle',
-  });
-  const latest = events[events.length - 1];
-  if (latest) {
-    if (latest.type === 'agent:active') states.current[latest.agent] = latest.activity;
-    if (latest.type === 'agent:idle') states.current[latest.agent] = 'Idle';
-  }
-  return states.current;
-}
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState(3);
   const [demoActive, setDemoActive] = useState(false);
   const [demoEvents, setDemoEvents] = useState<WSEvent[]>([]);
+  const [cmdOpen, setCmdOpen] = useState(false);
   const demoRef = useRef<DemoRunner | null>(null);
 
   const { assets, error: assetError } = useAssets();
   const { status, events: wsEvents } = useWebSocket();
 
   const events = status === 'connected' ? wsEvents : demoEvents;
-  const agentStates = useAgentStates(events);
+  const mc = useMissionControl(events);
 
   useGameScene(canvasRef, officeTheme, events, zoom, assets);
 
@@ -69,24 +59,43 @@ export default function App() {
     return () => { demoRef.current?.stop(); };
   }, []);
 
+  // ⌘K shortcut
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setCmdOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  const commands = [
+    { key: 'demo', label: demoActive ? 'Stop demo' : 'Run demo', action: toggleDemo },
+    { key: 'zoom-in', label: 'Zoom in', action: () => setZoom((z) => Math.min(z + 1, 5)) },
+    { key: 'zoom-out', label: 'Zoom out', action: () => setZoom((z) => Math.max(z - 1, 1)) },
+  ];
+
   if (assetError) {
-    return <div className="app loading">Failed to load assets: {assetError}</div>;
+    return <div className="loading">Failed to load assets: {assetError}</div>;
   }
 
   if (!assets) {
-    return <div className="app loading">Loading assets...</div>;
+    return <div className="loading">Loading assets...</div>;
   }
 
   return (
     <div className="app">
       <header className="header">
-        <h1>Codename Claude — Pixel Agents</h1>
+        <h1>
+          <span className="title-accent">codename claude</span> ─── mission control
+        </h1>
         <div className="controls">
           <button className="demo-btn" onClick={toggleDemo}>
-            {demoActive ? 'STOP DEMO' : 'RUN DEMO'}
+            {demoActive ? 'STOP' : 'DEMO'}
           </button>
           <label className="zoom-control">
-            Zoom:
             <input
               type="range"
               min={1}
@@ -96,25 +105,44 @@ export default function App() {
             />
             {zoom}x
           </label>
-          <StatusDot status={status} />
+          <button
+            className="demo-btn"
+            onClick={() => setCmdOpen(true)}
+            style={{ fontSize: 10, padding: '3px 8px' }}
+          >
+            ⌘K
+          </button>
         </div>
       </header>
-      <div className="canvas-container">
+
+      <PipelinePanel
+        stages={mc.stages}
+        phase={mc.phase}
+        taskDescription={mc.taskDescription}
+      />
+
+      <div className="canvas-area">
         <canvas ref={canvasRef} />
         <div className="vignette" />
       </div>
-      <footer className="status-bar">
-        {ROLES.map((role) => (
-          <span key={role} className="agent-status" style={{ color: AGENT_COLORS[role] }}>
-            {role}: {agentStates[role]}
-          </span>
-        ))}
-        {demoActive && <span className="agent-status demo-label">DEMO</span>}
-      </footer>
+
+      <TasksPanel
+        tasks={mc.tasks}
+        lastVerdict={mc.lastVerdict}
+      />
+
+      <FooterBar
+        budget={mc.budget}
+        uptime={mc.uptime}
+        status={status}
+        demoActive={demoActive}
+      />
+
+      <CommandPalette
+        open={cmdOpen}
+        onClose={() => setCmdOpen(false)}
+        commands={commands}
+      />
     </div>
   );
-}
-
-function StatusDot({ status }: { status: ConnectionStatus }) {
-  return <span className={`status-dot ${status}`} />;
 }
