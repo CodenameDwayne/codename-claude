@@ -2,11 +2,12 @@ import type { WSEvent } from '../ws/types';
 
 /**
  * Generates a sequence of simulated pipeline events for demo mode.
- * Returns events with relative delays in ms.
+ * Includes task:progress and heartbeat events for mission control panels.
  */
 export function* demoPipeline(): Generator<{ event: WSEvent; delayMs: number }> {
   // Pipeline starts
   yield { delayMs: 1000, event: { type: 'pipeline:start', taskDescription: 'Add user authentication' } };
+  yield { delayMs: 100, event: { type: 'heartbeat', uptime: 15120, budget: { used: 187, limit: 600 } } };
 
   // Scout researches
   yield { delayMs: 500, event: { type: 'agent:active', agent: 'scout', activity: 'researching' } };
@@ -15,12 +16,17 @@ export function* demoPipeline(): Generator<{ event: WSEvent; delayMs: number }> 
 
   // Architect plans
   yield { delayMs: 2000, event: { type: 'agent:active', agent: 'architect', activity: 'planning' } };
-  yield { delayMs: 5000, event: { type: 'agent:idle', agent: 'architect' } };
+  yield { delayMs: 2000, event: { type: 'heartbeat', uptime: 15145, budget: { used: 210, limit: 600 } } };
+  yield { delayMs: 3000, event: { type: 'agent:idle', agent: 'architect' } };
   yield { delayMs: 200, event: { type: 'handoff', from: 'architect', to: 'builder', artifact: 'plan' } };
 
-  // Builder codes
-  yield { delayMs: 2000, event: { type: 'agent:active', agent: 'builder', activity: 'coding' } };
-  yield { delayMs: 6000, event: { type: 'agent:idle', agent: 'builder' } };
+  // Builder codes task 1
+  yield { delayMs: 1000, event: { type: 'task:progress', taskIndex: 0, total: 5, label: 'Setup auth middleware' } };
+  yield { delayMs: 500, event: { type: 'agent:active', agent: 'builder', activity: 'coding' } };
+  yield { delayMs: 3000, event: { type: 'task:progress', taskIndex: 1, total: 5, label: 'Add JWT validation' } };
+  yield { delayMs: 3000, event: { type: 'task:progress', taskIndex: 2, total: 5, label: 'Implement login endpoint' } };
+  yield { delayMs: 2000, event: { type: 'heartbeat', uptime: 15180, budget: { used: 234, limit: 600 } } };
+  yield { delayMs: 1000, event: { type: 'agent:idle', agent: 'builder' } };
   yield { delayMs: 200, event: { type: 'handoff', from: 'builder', to: 'reviewer', artifact: 'code' } };
 
   // Reviewer reviews — first pass: revise
@@ -31,7 +37,10 @@ export function* demoPipeline(): Generator<{ event: WSEvent; delayMs: number }> 
 
   // Builder fixes
   yield { delayMs: 2000, event: { type: 'agent:active', agent: 'builder', activity: 'coding' } };
-  yield { delayMs: 4000, event: { type: 'agent:idle', agent: 'builder' } };
+  yield { delayMs: 2000, event: { type: 'task:progress', taskIndex: 3, total: 5, label: 'Add refresh tokens' } };
+  yield { delayMs: 2000, event: { type: 'task:progress', taskIndex: 4, total: 5, label: 'Write integration tests' } };
+  yield { delayMs: 1000, event: { type: 'heartbeat', uptime: 15220, budget: { used: 268, limit: 600 } } };
+  yield { delayMs: 1000, event: { type: 'agent:idle', agent: 'builder' } };
   yield { delayMs: 200, event: { type: 'handoff', from: 'builder', to: 'reviewer', artifact: 'code' } };
 
   // Reviewer approves
@@ -41,6 +50,7 @@ export function* demoPipeline(): Generator<{ event: WSEvent; delayMs: number }> 
 
   // Pipeline complete
   yield { delayMs: 1000, event: { type: 'pipeline:end', result: 'success' } };
+  yield { delayMs: 100, event: { type: 'heartbeat', uptime: 15260, budget: { used: 289, limit: 600 } } };
 }
 
 export class DemoRunner {
